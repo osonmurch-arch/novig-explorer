@@ -63,7 +63,7 @@
 
   /* ---------- tabs ---------- */
   const tabs = [...document.querySelectorAll('.tab')];
-  let current = 'routes';
+  let current = 'markets';
   function show(page, push = true) {
     const tab = tabs.find((t) => t.dataset.page === page) || tabs[0];
     current = tab.dataset.page;
@@ -72,7 +72,9 @@
       t.setAttribute('aria-selected', String(on));
       document.getElementById(t.dataset.page).hidden = !on;
     });
+    document.body.dataset.tab = current;
     if (push) history.replaceState(null, '', '#' + current);
+    document.dispatchEvent(new CustomEvent('nv:tab', { detail: current }));
     drawCharts();
   }
   tabs.forEach((t) => t.addEventListener('click', () => show(t.dataset.page)));
@@ -400,7 +402,7 @@
       drawTables();
       initCalc();
       const start = location.hash.slice(1);
-      show(tabs.some((t) => t.dataset.page === start) ? start : 'routes', false);
+      show(tabs.some((t) => t.dataset.page === start) ? start : 'markets', false);
     })
     .catch((err) => {
       $('#takeaway').replaceChildren(el('span', { class: 'fail' }, 'Couldn’t load the API data. ' + err.message));

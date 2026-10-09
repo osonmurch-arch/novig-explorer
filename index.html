@@ -11,7 +11,7 @@
   <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&family=JetBrains+Mono:wght@400;600&family=Source+Serif+4:opsz,wght@8..60,400;8..60,500&display=swap" rel="stylesheet">
   <link rel="stylesheet" href="style.css">
 </head>
-<body>
+<body data-tab="markets">
   <div class="wrap">
     <header class="head">
       <div class="head-row">
@@ -24,15 +24,40 @@
     <section class="tiles" id="tiles" aria-label="At a glance"></section>
 
     <nav class="tabs" role="tablist" aria-label="Sections">
-      <button class="tab" role="tab" id="tab-routes" data-page="routes" aria-selected="true">Routes</button>
+      <button class="tab" role="tab" id="tab-markets" data-page="markets" aria-selected="true">Markets <span class="live-dot" aria-hidden="true"></span></button>
+      <button class="tab" role="tab" id="tab-routes" data-page="routes" aria-selected="false">Routes</button>
       <button class="tab" role="tab" id="tab-limits" data-page="limits" aria-selected="false">Limits and streaming</button>
       <button class="tab" role="tab" id="tab-fees" data-page="fees" aria-selected="false">Fees and orders</button>
       <button class="tab" role="tab" id="tab-start" data-page="start" aria-selected="false">Getting started</button>
     </nav>
 
-    <!-- ROUTES -->
     <main>
-    <section class="page" id="routes" role="tabpanel" aria-labelledby="tab-routes">
+    <!-- MARKETS -->
+    <section class="page" id="markets" role="tabpanel" aria-labelledby="tab-markets">
+      <div class="card mk-card">
+        <div class="mk-top">
+          <div>
+            <h2>Live markets</h2>
+            <p class="note">Straight from Novig's public order books, no key needed. Prices are what it costs to buy that side right now, before any fee.</p>
+          </div>
+        </div>
+        <div class="tools mk-tools">
+          <select id="mk-league" aria-label="League"><option>NFL</option></select>
+          <div class="seg" role="group" aria-label="View">
+            <button class="mk-view" type="button" data-view="games" aria-pressed="true">Games</button>
+            <button class="mk-view" type="button" data-view="futures" aria-pressed="false">Futures</button>
+          </div>
+          <input type="search" id="mk-q" placeholder="Search teams or events" aria-label="Search events">
+          <button class="btn" type="button" id="mk-refresh">Refresh</button>
+          <label class="auto"><input type="checkbox" id="mk-auto"> Auto-refresh 30s</label>
+        </div>
+        <div class="mk-meta"><span id="mk-count"></span><span id="mk-status" aria-live="polite"></span></div>
+        <div id="mk-list" class="mk-list"></div>
+      </div>
+    </section>
+
+    <!-- ROUTES -->
+    <section class="page" id="routes" role="tabpanel" aria-labelledby="tab-routes" hidden>
       <div class="card">
         <h2>Routes by group</h2>
         <p class="note">Click a bar to filter the table to that group. Click it again to clear.</p>
@@ -211,5 +236,6 @@
 
   <div class="tip" id="tip" role="tooltip"></div>
   <script src="app.js"></script>
+  <script src="markets.js"></script>
 </body>
 </html>

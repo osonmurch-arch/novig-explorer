@@ -2,6 +2,8 @@
 
 An unofficial, single-page explorer for [Novig's v3 exchange API](https://docs.novig.com/): every route with its key scope, throttle bucket and token cost, plus throttle limits, websocket channel weights, fee schedules with a fee calculator, the price grid, order types, environments and the quickstart.
 
+The **Markets** tab shows live prices from Novig's public, keyless routes (`api.novig.com/v3/public`): pick a league, see each game's moneyline, and open any event for all its markets and full order books. It paces itself to the public rate limit (about 2 requests a second per IP). `markets.js` holds that code.
+
 Plain HTML, CSS and JavaScript. No build step and no dependencies, so it runs anywhere that serves static files, including GitHub Pages.
 
 ## Run it locally
