@@ -681,6 +681,12 @@
       const r = await fetch('/local/status', { cache: 'no-store' });
       const j = await r.json();
       if (!j || !j.version) return false;
+      const pageV = await window.NV_VERSION;
+      if (pageV && j.version !== pageV) {
+        const warn = $('#mk-verwarn');
+        warn.replaceChildren(el('b', {}, 'Out of date: '), `your local server is v${j.version} but this page is v${pageV}. Close the black server window and double-click start.cmd.`);
+        warn.hidden = false;
+      }
       if (!j.ok) {
         const why = j.management ? j.message : `${j.status || 'no answer'}${j.code ? ' ' + j.code : ''}${j.message ? ': ' + j.message : ''}`;
         const note = $('#mk-keynote');

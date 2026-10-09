@@ -16,7 +16,8 @@ import { fileURLToPath } from 'node:url';
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const SITE = path.resolve(HERE, '..');
-const VERSION = '1.2.0';
+// One version for the page and this server: both read ../version.json.
+const VERSION = (() => { try { return JSON.parse(fs.readFileSync(path.join(SITE, 'version.json'), 'utf8')).version; } catch { return '?'; } })();
 
 /* ---------------- config ---------------- */
 function loadConfig() {
@@ -522,7 +523,7 @@ function json(res, code, obj) {
 }
 
 /* ---------------- start ---------------- */
-console.log(`\n  Novig Explorer — local live server ${VERSION}`);
+console.log(`\n  Novig Markets — local live server v${VERSION}`);
 console.log(`  Key ${CFG.keyId.slice(0, 8)}… (${CFG.alg === 'ed25519' ? 'Ed25519' : 'P-256'}) → ${CFG.host}`);
 server.on('error', (e) => fail(e.code === 'EADDRINUSE' ? `Port ${CFG.port} is busy. Close the other copy, or set "port" in config.json.` : e.message));
 server.listen(CFG.port, '127.0.0.1', async () => {
