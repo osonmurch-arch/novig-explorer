@@ -132,6 +132,17 @@
     });
   }
 
+  /* Gap = 1 − (best bid on side A) − (best bid on side B): the spread you'd pay to buy one side
+     and immediately buy the other. One price step (0.5¢ in the middle of the grid) is as tight as it gets. */
+  function gapOf(m, book) {
+    if (!m || !book || !m.outcomes || m.outcomes.length !== 2) return null;
+    const [a, b] = m.outcomes.map((o) => levels(book.orders ? book.orders[o.outcomeId] : [])[0] || null);
+    if (!a || !b) return { oneSided: true, a, b, cents: null };
+    return { oneSided: false, a, b, cents: Math.round((1 - a.price - b.price) * 1000) / 10 };
+  }
+  const gapText = (c) => (Number.isInteger(c) ? c : c.toFixed(1)) + '¢';
+  const isWide = (g) => g && !g.oneSided && g.cents > S.threshold + 1e-9;
+
   /* ---------- state ---------- */
   const S = {
     started: false,
@@ -150,6 +161,12 @@
     loading: false,
     gen: 0,
     problem: '',
+    threshold: Number(store.get('nv-gap')) >= 0 && store.get('nv-gap') !== null ? Number(store.get('nv-gap')) : 0.5,
+    autoOn: true,
+    pollGen: 0,
+    inflight: new Set(),
+    oneSided: false,
+    scan: { markets: [], loaded: false, loading: false, scope: store.get('nv-scope') || 'main', league: '', error: '' },
   };
 
   const root = $('#markets');
@@ -191,6 +208,7 @@
     const gen = ++S.gen;
     S.loading = true;
     S.events = []; S.money.clear(); S.open.clear(); S.eventMarkets.clear(); S.openBook = null;
+    S.scan = { markets: [], loaded: false, loading: false, scope: S.scan.scope, league: S.league, error: '' };
     draw();
     setStatus(`Loading ${S.league}…`);
     try {
@@ -205,6 +223,7 @@
       money.forEach((m) => { if (m.status === 'OPEN' && !S.money.has(m.eventId)) S.money.set(m.eventId, m); });
       S.loading = false;
       draw();
+      if (S.view === 'gaps') ensureScan();
       await refreshBooks(gen);
     } catch (err) {
       if (gen !== S.gen) return;
@@ -217,13 +236,13 @@
 
   function visibleEvents() {
     const t = S.term.trim().toLowerCase();
-    return S.events.filter((e) => (S.view === 'games' ? isGame(e) : !isGame(e)) && (!t || e.description.toLowerCase().includes(t)));
+    return S.events.filter((e) => (S.view === 'futures' ? !isGame(e) : isGame(e)) && (!t || e.description.toLowerCase().includes(t)));
   }
 
   async function refreshBooks(gen = S.gen) {
     if (S.loading || gen !== S.gen) return;
-    const targets = visibleEvents().map((e) => S.money.get(e.eventId)).filter(Boolean);
-    if (S.openBook) targets.unshift({ marketId: S.openBook });
+    if (S.autoOn) { draw(); watch(); startPolling(); return; }
+    const targets = [...new Set(candidates())].map((marketId) => ({ marketId }));
     const total = targets.length;
     if (!total) { stamp(); return; }
     let done = 0;
@@ -272,7 +291,7 @@
     if (LIVE.ws === 'live') {
       badge.textContent = 'Live';
       badge.className = 'mode on';
-      setStatus(`Streaming ${LIVE.streaming} market${LIVE.streaming === 1 ? '' : 's'} with your key${LIVE.last ? ' · last change ' + clock(LIVE.last) : ''}${S.loadedAt ? ' · others as of ' + clock(S.loadedAt) : ''}`);
+      setStatus(`Streaming ${LIVE.streaming} market${LIVE.streaming === 1 ? '' : 's'} live${LIVE.last ? ' · last change ' + clock(LIVE.last) : ''}${S.autoOn && S.pending ? ` · ${S.pending} others refreshed about every ${S.cycle || 1}s` : ''}`);
     } else {
       badge.textContent = 'Your key';
       badge.className = 'mode';
@@ -328,7 +347,7 @@
       onclick: () => toggleEvent(e), onkeydown: (ev) => { if (ev.key === 'Enter' || ev.key === ' ') { ev.preventDefault(); toggleEvent(e); } } },
       el('div', { class: 'ev-main' },
         el('div', { class: 'ev-title' }, e.description),
-        el('div', { class: 'ev-when' }, live ? el('span', { class: 'live' }, 'Live') : '', when(e.startsTs))),
+        el('div', { class: 'ev-when' }, live ? el('span', { class: 'live' }, 'Live') : '', when(e.startsTs), m ? gapChip(m, b) : '')),
       el('div', { class: 'ev-prices', 'data-market': m ? m.marketId : '' },
         m ? (quotes ? quotes.slice(0, 2).map(priceCell) : [el('div', { class: 'px loading-px' }, el('span', { class: 'skel' }, 'loading')), el('div', { class: 'px loading-px' }, el('span', { class: 'skel' }, 'loading'))])
           : el('div', { class: 'px-sub muted' }, S.view === 'games' ? 'No moneyline' : 'Open for markets')),
@@ -336,6 +355,13 @@
     const card = el('div', { class: 'ev' + (open ? ' open' : ''), id: 'ev-' + e.eventId }, head);
     if (open) card.append(eventDetail(e));
     return card;
+  }
+
+  function gapChip(m, b) {
+    const g = b && b.book ? gapOf(m, b.book) : null;
+    const chip = el('span', { class: 'gap' + (isWide(g) ? ' wide' : ''), 'data-gap': m.marketId, title: 'Gap: 1 − both sides’ best bids' });
+    if (g) chip.textContent = g.oneSided ? 'one side empty' : 'Gap ' + gapText(g.cents);
+    return chip;
   }
 
   function eventDetail(e) {
@@ -404,6 +430,8 @@
     const cells = quote(m, b.book).slice(0, 2).map(priceCell);
     cells.forEach((c, i) => { if (before.length && before[i] !== undefined && c.querySelector('.px-main') && c.querySelector('.px-main').textContent !== before[i]) c.classList.add('flash'); });
     slot.replaceChildren(...cells);
+    const chip = list.querySelector(`.gap[data-gap="${marketId}"]`);
+    if (chip) chip.replaceWith(gapChip(m, b));
   }
 
   function draw() {
@@ -412,12 +440,154 @@
       list.replaceChildren(...Array.from({ length: 6 }, () => el('div', { class: 'ev' }, el('div', { class: 'ev-head' }, el('div', { class: 'ev-main' }, el('span', { class: 'skel' }, 'Loading event name here'))))));
       return;
     }
+    $('#mk-gapbar').hidden = S.view !== 'gaps';
+    if (S.view === 'gaps') { drawGaps(); window.scrollTo(0, scrollY); return; }
     const evs = visibleEvents();
     $('#mk-count').textContent = `${evs.length} ${S.view === 'games' ? 'games' : 'futures'}`;
     list.replaceChildren(...(evs.length ? evs.map(eventRow) : [el('div', { class: 'empty' }, S.events.length ? 'Nothing matches.' : `No open ${S.league} events right now.`)]));
     drawLiveMarks();
     window.scrollTo(0, scrollY);
   }
+
+  /* ---------- gap scanner ---------- */
+  const eventName = (id) => { const e = S.events.find((x) => x.eventId === id); return e ? e.description : ''; };
+  async function ensureScan() {
+    const sc = S.scan;
+    if (sc.loaded || sc.loading || S.loading) return;
+    sc.loading = true; sc.error = '';
+    const gen = S.gen;
+    drawGaps();
+    try {
+      const types = sc.scope === 'main' ? '&marketType=MONEY,SPREAD,TOTAL' : '';
+      const ms = await pages(`/catalog/markets?league=${encodeURIComponent(S.league)}${types}&limit=1000`, 12);
+      if (gen !== S.gen) return;
+      const live = new Set(S.events.map((e) => e.eventId));
+      sc.markets = ms.filter((m) => m.status === 'OPEN' && m.outcomes && m.outcomes.length === 2 && live.has(m.eventId));
+      sc.loaded = true;
+    } catch (err) {
+      sc.error = err.message;
+    }
+    sc.loading = false;
+    drawGaps();
+    startPolling();
+  }
+
+  function gapRows() {
+    const t = S.term.trim().toLowerCase();
+    const rows = [];
+    for (const m of S.scan.markets) {
+      const b = S.books.get(m.marketId);
+      if (!b || !b.book) continue;
+      const g = gapOf(m, b.book);
+      if (!g || !(isWide(g) || (S.oneSided && g.oneSided))) continue;
+      const ev = eventName(m.eventId);
+      if (t && !(ev + ' ' + m.description).toLowerCase().includes(t)) continue;
+      rows.push({ m, b, g, ev });
+    }
+    rows.sort((x, y) => (x.g.oneSided - y.g.oneSided) || ((y.g.cents || 0) - (x.g.cents || 0)) || (x.m.startsTs - y.m.startsTs));
+    return rows;
+  }
+
+  function sideCell(o, lvl, other) {
+    const buy = other ? Math.round((1 - other.price) * 1000) / 1000 : null;
+    return el('td', { class: 'side' },
+      el('div', {}, el('b', {}, o.name)),
+      el('div', {}, buy !== null ? `Buy ${cents(buy)} (${american(buy)})` : 'No offer'),
+      el('div', { class: 'muted' }, lvl ? `Bid ${cents(lvl.price)} × ${new Intl.NumberFormat('en', { notation: 'compact' }).format(lvl.qty)}` : 'No bid'));
+  }
+
+  function drawGaps() {
+    if (S.view !== 'gaps') return;
+    const sc = S.scan;
+    const scanned = sc.markets.filter((m) => S.books.has(m.marketId)).length;
+    const rows = sc.loaded ? gapRows() : [];
+    $('#mk-count').textContent = sc.loaded ? `${rows.length} market${rows.length === 1 ? '' : 's'} with a gap over ${gapText(S.threshold)}` : '';
+    $('#mk-scan').textContent = sc.error ? `Couldn’t load markets (${sc.error})` : sc.loading ? 'Loading the market list…'
+      : `Scanned ${new Intl.NumberFormat('en').format(scanned)} of ${new Intl.NumberFormat('en').format(sc.markets.length)} markets${S.cycle ? ` · each re-checked about every ${S.cycle}s` : ''}`;
+    if (!sc.loaded) {
+      list.replaceChildren(el('div', { class: 'empty' }, sc.error ? 'Couldn’t load the market list. Try Refresh.' : el('span', { class: 'skel' }, 'Loading markets to scan')));
+      return;
+    }
+    const now = Date.now();
+    const age = (b) => {
+      if (b.live && LIVE.on && LIVE.ws === 'live' && LIVE.watching.includes(b.book.marketId)) return el('td', { class: 'age streaming hide-g' }, '● live');
+      const sec = Math.max(0, Math.round((now - b.at) / 1000));
+      return el('td', { class: 'age hide-g' }, sec < 1 ? 'now' : `${sec}s ago`);
+    };
+    const body = [];
+    for (const r of rows) {
+      const [oa, ob] = r.m.outcomes;
+      const sel = S.openBook === r.m.marketId;
+      body.push(el('tr', { class: 'g' + (sel ? ' sel' : ''), tabindex: '0', onclick: () => openBook(r.m), onkeydown: (e) => { if (e.key === 'Enter') openBook(r.m); } },
+        el('td', { class: 'gc' }, r.g.oneSided ? 'one side' : gapText(r.g.cents)),
+        el('td', {}, el('div', { class: 'ev-n' }, r.ev || '—'), el('div', { class: 'mk-n' }, `${pretty(r.m.marketType)} · ${r.m.description}`)),
+        sideCell(oa, r.g.a, r.g.b),
+        sideCell(ob, r.g.b, r.g.a),
+        age(r.b)));
+      if (sel) body.push(el('tr', {}, el('td', { colspan: '5', class: 'bookcell' }, bookView(r.m, S.books.get(r.m.marketId)))));
+    }
+    if (!rows.length) {
+      list.replaceChildren(el('div', { class: 'empty' }, scanned < sc.markets.length ? `No gaps over ${gapText(S.threshold)} yet · still scanning` : `No markets with a gap over ${gapText(S.threshold)} right now.`));
+      return;
+    }
+    list.replaceChildren(el('table', { class: 'gaps-t' },
+      el('thead', {}, el('tr', {}, el('th', {}, 'Gap'), el('th', {}, 'Market'), el('th', {}, 'Side A'), el('th', {}, 'Side B'), el('th', { class: 'hide-g' }, 'Updated'))),
+      el('tbody', {}, body)));
+  }
+
+  /* ---------- polling: refresh what isn't streamed, oldest first ---------- */
+  function streamed(id) { const b = S.books.get(id); return LIVE.on && LIVE.ws === 'live' && b && b.live && LIVE.watching.includes(id); }
+  function candidates() {
+    const ids = [];
+    if (S.openBook) ids.push(S.openBook);
+    if (S.view === 'gaps') S.scan.markets.forEach((m) => ids.push(m.marketId));
+    else visibleEvents().forEach((e) => { const m = S.money.get(e.eventId); if (m) ids.push(m.marketId); });
+    return ids;
+  }
+  function nextToPoll() {
+    const now = Date.now();
+    let best = null; let bestAt = Infinity; let pending = 0;
+    for (const id of candidates()) {
+      if (S.inflight.has(id) || streamed(id)) continue;
+      pending += 1;
+      const b = S.books.get(id);
+      const at = b ? b.at : 0;
+      if (now - at < 1000) continue;
+      if (at < bestAt) { bestAt = at; best = id; }
+    }
+    S.pending = pending;
+    return best;
+  }
+  async function worker(gen) {
+    while (S.autoOn && gen === S.pollGen) {
+      if (document.hidden || root.hidden || S.loading) { await sleep(500); continue; }
+      const id = nextToPoll();
+      if (!id) { await sleep(250); continue; }
+      S.inflight.add(id);
+      try {
+        await getBook(id);
+        drawRowPrices(id);
+        if (S.openBook === id && S.view !== 'gaps') drawOpenBook();
+      } catch { /* shown via status */ }
+      S.inflight.delete(id);
+    }
+  }
+  function startPolling() {
+    if (!S.autoOn) return;
+    S.pollGen += 1;
+    const n = LIVE.on && !LIVE.restDown ? 4 : 1;
+    for (let i = 0; i < n; i++) worker(S.pollGen);
+  }
+
+  // Every second: estimate the refresh cycle, redraw the gaps table, re-aim the stream.
+  let tickN = 0;
+  setInterval(() => {
+    if (root.hidden || !S.started) return;
+    tickN += 1;
+    if (S.autoOn) S.cycle = Math.max(1, Math.round((S.pending || 0) / bucket.rate));
+    if (S.view === 'gaps') { drawGaps(); if (tickN % 5 === 0) watch(); }
+    if (LIVE.on) liveStatus(); else if (S.autoOn && S.books.size && !S.loading && !S.problem) setStatus(`Updating every second · public data, no key${S.cycle > 1 ? ` · each market about every ${S.cycle}s` : ''}`);
+  }, 1000);
 
   /* ---------- live mode: local server with your key ---------- */
   async function detectLocal() {
@@ -439,7 +609,6 @@
       Object.assign(bucket, { tokens: 48, cap: 48, rate: 14 });
       $('#mk-mode').hidden = false;
       $('#markets .mk-top .note').textContent = 'Streaming from Novig with your read-only key through the server on this computer. Green-edged prices update live; prices are what it costs to buy that side right now, before any fee.';
-      $('#mk-auto-label').firstChild.nextSibling.textContent = ' Auto-refresh the rest 30s';
       openStream();
       return true;
     } catch { return false; }
@@ -468,12 +637,15 @@
     clearTimeout(watchTimer);
     watchTimer = setTimeout(() => {
       const ids = [];
-      if (S.openBook) ids.push(S.openBook);
-      for (const e of visibleEvents()) {
-        const m = S.money.get(e.eventId);
-        if (m && !ids.includes(m.marketId)) ids.push(m.marketId);
-        if (ids.length >= LIVE.max) break;
+      const add = (id) => { if (id && !ids.includes(id) && ids.length < LIVE.max) ids.push(id); };
+      add(S.openBook);
+      if (S.view === 'gaps' && S.scan.loaded) {
+        const gapped = gapRows().map((r) => r.m.marketId);
+        const keep = new Set(gapped);
+        LIVE.watching.filter((id) => keep.has(id)).forEach(add); // keep what's already streaming, so subscriptions don't churn
+        gapped.forEach(add);
       }
+      for (const e of visibleEvents()) { const m = S.money.get(e.eventId); if (m) add(m.marketId); }
       const key = ids.join(',');
       if (key === LIVE.watching.join(',')) return;
       LIVE.watching = ids;
@@ -501,10 +673,25 @@
   leagueSel.addEventListener('change', () => { S.league = leagueSel.value; store.set('nv-league', S.league); S.openBook = null; S.openMarket = null; loadLeague(); });
   document.querySelectorAll('.mk-view').forEach((b) => b.addEventListener('click', () => {
     S.view = b.dataset.view;
+    S.openBook = null; S.openMarket = null;
     document.querySelectorAll('.mk-view').forEach((x) => x.setAttribute('aria-pressed', String(x === b)));
     draw();
+    if (S.view === 'gaps') ensureScan();
     refreshBooks();
   }));
+  const gapIn = $('#mk-gap');
+  gapIn.value = String(S.threshold);
+  gapIn.addEventListener('input', () => {
+    const v = Number(gapIn.value);
+    if (!(v >= 0)) return;
+    S.threshold = v; store.set('nv-gap', String(v));
+    list.querySelectorAll('.gap[data-gap]').forEach((c) => { const ev = S.events.find((e) => { const m = S.money.get(e.eventId); return m && m.marketId === c.dataset.gap; }); if (ev) { const m = S.money.get(ev.eventId); c.replaceWith(gapChip(m, S.books.get(m.marketId))); } });
+    drawGaps();
+  });
+  const scopeSel = $('#mk-scope');
+  scopeSel.value = S.scan.scope;
+  scopeSel.addEventListener('change', () => { S.scan = { markets: [], loaded: false, loading: false, scope: scopeSel.value, league: S.league, error: '' }; store.set('nv-scope', scopeSel.value); ensureScan(); });
+  $('#mk-onesided').addEventListener('change', (e) => { S.oneSided = e.target.checked; drawGaps(); });
   let searchTimer;
   search.addEventListener('input', () => {
     S.term = search.value;
@@ -519,11 +706,15 @@
       Object.assign(bucket, { tokens: 48, cap: 48, rate: 14 });
       if (S.problem) { S.problem = ''; loadLeagues().then(loadLeague); return; }
     }
-    S.books.clear(); draw(); refreshBooks();
+    for (const [id, b] of S.books) if (!b.live) S.books.delete(id);
+    if (S.view === 'gaps' && !S.scan.loaded) ensureScan();
+    draw();
+    if (S.autoOn) { startPolling(); return; }
+    refreshBooks(); // one full pass when updating is off
   });
   $('#mk-auto').addEventListener('change', (ev) => {
-    clearInterval(S.auto);
-    S.auto = ev.target.checked ? setInterval(() => { if (!document.hidden && !root.hidden) refreshBooks(); }, 30000) : null;
+    S.autoOn = ev.target.checked;
+    if (S.autoOn) startPolling(); else { S.pollGen += 1; stamp(); }
   });
 
   function start() {

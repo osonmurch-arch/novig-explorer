@@ -35,7 +35,7 @@ function loadConfig() {
   try { cfg.key = readKey(fs.readFileSync(keyPath, 'utf8')); } catch (e) { fail(`Couldn't read ${path.basename(keyPath)} as a private key: ${e.message}\n  Paste the whole key Novig showed you, including the -----BEGIN PRIVATE KEY----- and -----END PRIVATE KEY----- lines if it had them.`); }
   cfg.alg = cfg.key.asymmetricKeyType; // 'ed25519' or 'ec'
   if (!['ed25519', 'ec'].includes(cfg.alg)) fail(`Unsupported key type ${cfg.alg}; Novig keys are Ed25519 or P-256.`);
-  cfg.streamMarkets = Math.min(Math.max(Number(cfg.streamMarkets || 30), 1), 2048);
+  cfg.streamMarkets = Math.min(Math.max(Number(cfg.streamMarkets || 60), 1), 2048);
   return cfg;
 }
 function fail(msg) { console.error('\n  ✖ ' + msg + '\n'); process.exit(1); }

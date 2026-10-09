@@ -169,7 +169,29 @@ body[data-tab="markets"] .head { margin-bottom: 16px; }
 .ev { border-bottom: 1px solid var(--line); }
 .mode { display: inline-block; font-size: 11px; font-weight: 600; border: 1px solid var(--line); border-radius: 999px; padding: 0 8px; margin-right: 8px; color: var(--muted); }
 .mode.on { color: var(--ok); border-color: currentColor; }
-.mode[hidden], .keynote[hidden] { display: none; }
+.mode[hidden], .keynote[hidden], .gapbar[hidden] { display: none; }
+.gapctl { display: inline-flex; align-items: center; gap: 6px; font-size: 13px; color: var(--muted); }
+.gapctl input { width: 4.2rem; }
+.gapbar { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 16px; padding: 10px 0 0; font-size: 13px; color: var(--muted); }
+.gapbar select { font: inherit; font-size: 13px; color: var(--fg); background: var(--bg); border: 1px solid var(--line); border-radius: 8px; padding: 5px 8px; }
+.gap { display: inline-block; margin-left: 8px; font-size: 11px; font-weight: 600; border-radius: 4px; padding: 0 6px; border: 1px solid var(--line); color: var(--muted); font-variant-numeric: tabular-nums; }
+.gap.wide { color: var(--warn); border-color: currentColor; background: color-mix(in srgb, var(--warn) 10%, transparent); }
+.gap:empty { display: none; }
+.gaps-t { width: 100%; border-collapse: collapse; font-size: 13px; font-variant-numeric: tabular-nums; }
+.gaps-t th { text-align: left; font-weight: 500; color: var(--muted); padding: 8px 10px; border-bottom: 1px solid var(--line); white-space: nowrap; }
+.gaps-t td { padding: 9px 10px; border-bottom: 1px solid var(--line); vertical-align: top; }
+.gaps-t tbody tr.g { cursor: pointer; }
+.gaps-t tbody tr.g:hover td { background: color-mix(in srgb, var(--accent) 6%, transparent); }
+.gaps-t tr.sel td { background: color-mix(in srgb, var(--accent) 10%, transparent); }
+.gaps-t .gc { font-size: 15px; font-weight: 600; color: var(--warn); white-space: nowrap; }
+.gaps-t .ev-n { font-weight: 500; }
+.gaps-t .mk-n { color: var(--muted); font-size: 12px; }
+.gaps-t .side b { font-weight: 600; }
+.gaps-t .side .muted { font-size: 12px; }
+.gaps-t .age { white-space: nowrap; color: var(--muted); font-size: 12px; }
+.gaps-t .age.streaming { color: var(--ok); font-weight: 600; }
+.gaps-t td.bookcell { padding: 0; }
+@media (max-width: 760px) { .gaps-t .hide-g { display: none; } }
 .keynote { margin: 10px 0 2px; padding: 10px 12px; border: 1px solid var(--warn); border-radius: 8px; color: var(--fg); background: color-mix(in srgb, var(--warn) 9%, var(--panel)); font-size: 13px; }
 .keynote b { color: var(--warn); }
 .mode.on::before { content: ""; display: inline-block; width: 6px; height: 6px; border-radius: 50%; background: currentColor; margin-right: 5px; vertical-align: 1px; animation: pulse 1.6s ease-in-out infinite; }

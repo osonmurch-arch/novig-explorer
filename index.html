@@ -46,12 +46,19 @@
           <div class="seg" role="group" aria-label="View">
             <button class="mk-view" type="button" data-view="games" aria-pressed="true">Games</button>
             <button class="mk-view" type="button" data-view="futures" aria-pressed="false">Futures</button>
+            <button class="mk-view" type="button" data-view="gaps" aria-pressed="false">Gaps</button>
           </div>
           <input type="search" id="mk-q" placeholder="Search teams or events" aria-label="Search events">
           <button class="btn" type="button" id="mk-refresh">Refresh</button>
-          <label class="auto" id="mk-auto-label"><input type="checkbox" id="mk-auto"> Auto-refresh 30s</label>
+          <label class="gapctl" title="Highlight markets whose gap (1 − both best bids) is wider than this">Gap over <input type="number" id="mk-gap" min="0" max="50" step="0.5" value="0.5" aria-label="Gap threshold in cents">¢</label>
+          <label class="auto" id="mk-auto-label"><input type="checkbox" id="mk-auto" checked> Update every second</label>
         </div>
         <div class="mk-meta"><span><span id="mk-mode" class="mode" hidden></span><span id="mk-count"></span></span><span id="mk-status" aria-live="polite"></span></div>
+        <div id="mk-gapbar" class="gapbar" hidden>
+          <label>Scan <select id="mk-scope" aria-label="Markets to scan"><option value="main">Moneylines, spreads and totals</option><option value="all">Every market (slower)</option></select></label>
+          <label class="auto"><input type="checkbox" id="mk-onesided"> Include one-sided books</label>
+          <span id="mk-scan" class="muted"></span>
+        </div>
         <div id="mk-keynote" class="keynote" role="status" hidden></div>
         <div id="mk-list" class="mk-list"></div>
       </div>
