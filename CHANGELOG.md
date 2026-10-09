@@ -2,6 +2,12 @@
 
 One version number covers the whole dashboard: the page and the local server (`local/server.mjs`) read it from `version.json`. If the page and the server disagree, the page says so: restart `start.cmd`.
 
+## 1.5.1 — 2026-10-09
+- Fix: markets Novig has closed (finished games) flooded the server window with MARKET_NOT_FOUND. They're now taken off the page the first time Novig says they're gone, and never asked for again.
+- Fix: one closed market no longer sinks a whole batch of live subscriptions; the server retries that batch one market at a time to find it.
+- Fix: a market whose price fetch fails now waits before retrying (up to a minute) instead of being retried immediately, which slowed every other market.
+- The game list reloads every 2 minutes, so finished games drop off and new ones appear while the dashboard stays open.
+
 ## 1.5.0 — 2026-10-09
 - The dashboard is markets only: removed the Routes, Limits and streaming, Fees and orders, and Getting started tabs and the API summary tiles.
 - Renamed to Novig Markets.

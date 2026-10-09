@@ -169,6 +169,8 @@
     moreOpen: new Set(), // "<eventId>:<type>" whose "Other lines" fold-out is open
     mkEvent: new Map(), // marketId -> eventId, for markets of opened events
     dirtyEvents: new Set(),
+    gone: new Set(), // markets Novig no longer has (closed or settled)
+    failed: new Map(), // marketId -> { n, until }: back off after a failed fetch
     scan: { markets: [], loaded: false, loading: false, scope: store.get('nv-scope') || 'main', league: '', error: '' },
   };
 
@@ -221,6 +223,7 @@
         pages(`/catalog/markets?league=${lg}&marketType=MONEY&limit=500`),
       ]);
       if (gen !== S.gen) return;
+      S.lastCatalog = Date.now();
       S.events = events.filter(isOpen).sort((a, b) => a.startsTs - b.startsTs);
       if (S.problem.startsWith('Couldn’t load ' + S.league) || S.problem.startsWith('Couldn’t load the league')) S.problem = '';
       money.forEach((m) => { if (m.status === 'OPEN' && !S.money.has(m.eventId)) S.money.set(m.eventId, m); });
@@ -263,10 +266,65 @@
   }
 
   async function getBook(marketId) {
-    const book = await api(`/catalog/markets/${marketId}/book?depth=20`);
-    S.books.set(marketId, { book, at: Date.now() });
-    return book;
+    try {
+      const book = await api(`/catalog/markets/${marketId}/book?depth=20`);
+      S.books.set(marketId, { book, at: Date.now() });
+      S.failed.delete(marketId);
+      return book;
+    } catch (err) {
+      if (/^404/.test(err.message)) markGone(marketId);
+      else { const f = S.failed.get(marketId) || { n: 0 }; f.n += 1; f.until = Date.now() + Math.min(60000, 2000 * 2 ** f.n); S.failed.set(marketId, f); }
+      throw err;
+    }
   }
+
+  // A market Novig closed or settled: take it off the page and stop asking for it.
+  function markGone(id) {
+    if (S.gone.has(id)) return;
+    S.gone.add(id);
+    S.books.delete(id); S.failed.delete(id);
+    for (const [ev, m] of S.money) if (m.marketId === id) S.money.delete(ev);
+    S.scan.markets = S.scan.markets.filter((m) => m.marketId !== id);
+    for (const [ev, ms] of S.eventMarkets) if (Array.isArray(ms) && ms.some((m) => m.marketId === id)) { S.eventMarkets.set(ev, ms.filter((m) => m.marketId !== id)); S.dirtyEvents.add(ev); }
+    if (S.openBook === id) { S.openBook = null; S.openMarket = null; }
+    S.goneDirty = true;
+  }
+
+  // Every 2 minutes, reload the league's events and moneylines (and the Gaps scan list), keeping prices:
+  // finished games drop off, new ones appear.
+  async function refreshCatalog() {
+    if (S.loading || !S.events.length || document.hidden) return;
+    const gen = S.gen;
+    try {
+      const lg = encodeURIComponent(S.league);
+      const [events, money] = await Promise.all([
+        pages(`/catalog/events?league=${lg}&limit=500`),
+        pages(`/catalog/markets?league=${lg}&marketType=MONEY&limit=500`),
+      ]);
+      if (gen !== S.gen) return;
+      S.events = events.filter(isOpen).sort((a, b) => a.startsTs - b.startsTs);
+      const live = new Set(S.events.map((e) => e.eventId));
+      S.money.clear();
+      money.forEach((m) => { if (m.status === 'OPEN' && live.has(m.eventId) && !S.gone.has(m.marketId) && !S.money.has(m.eventId)) S.money.set(m.eventId, m); });
+      for (const ev of [...S.open]) if (!live.has(ev)) S.open.delete(ev);
+      for (const ev of [...S.eventMarkets.keys()]) if (!live.has(ev)) S.eventMarkets.delete(ev);
+      if (S.scan.loaded) {
+        const types = S.scan.scope === 'main' ? '&marketType=MONEY,SPREAD,TOTAL' : '';
+        const ms = await pages(`/catalog/markets?league=${lg}${types}&limit=1000`, 12);
+        if (gen !== S.gen) return;
+        S.scan.markets = ms.filter((m) => m.status === 'OPEN' && m.outcomes && m.outcomes.length === 2 && live.has(m.eventId) && !S.gone.has(m.marketId));
+      }
+      // Forget prices for markets no longer listed anywhere.
+      const keep = new Set([...S.money.values(), ...S.scan.markets].map((m) => m.marketId));
+      for (const ms of S.eventMarkets.values()) if (Array.isArray(ms)) ms.forEach((m) => keep.add(m.marketId));
+      if (S.openBook) keep.add(S.openBook);
+      for (const id of [...S.books.keys()]) if (!keep.has(id)) S.books.delete(id);
+      draw();
+      watch();
+    } catch { /* try again next time */ }
+  }
+  setInterval(() => { S.lastCatalog = Date.now(); refreshCatalog(); }, 120000);
+  document.addEventListener('visibilitychange', () => { if (!document.hidden && S.lastCatalog && Date.now() - S.lastCatalog > 120000) refreshCatalog(); });
 
   const clock = (d) => d.toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit', second: '2-digit' });
   function stamp() {
@@ -631,7 +689,9 @@
     const now = Date.now();
     let best = null; let bestAt = Infinity; let pending = 0;
     for (const id of candidates()) {
-      if (S.inflight.has(id) || streamed(id)) continue;
+      if (S.inflight.has(id) || streamed(id) || S.gone.has(id)) continue;
+      const f = S.failed.get(id);
+      if (f && f.until > now) continue;
       pending += 1;
       const b = S.books.get(id);
       const at = b ? b.at : 0;
@@ -669,6 +729,7 @@
     if (root.hidden || !S.started) return;
     tickN += 1;
     if (S.autoOn) S.cycle = Math.max(1, Math.round((S.pending || 0) / bucket.rate));
+    if (S.goneDirty) { S.goneDirty = false; if (S.view !== 'gaps') draw(); watch(); }
     if (S.view === 'gaps') { drawGaps(); if (tickN % 5 === 0) watch(); }
     else if (S.dirtyEvents.size) { const evs = [...S.dirtyEvents]; S.dirtyEvents.clear(); evs.forEach(drawEventBody); if (tickN % 5 === 0) watch(); }
     if (LIVE.on) liveStatus(); else if (S.autoOn && S.books.size && !S.loading && !S.problem) setStatus(`Updating every second · public data, no key${S.cycle > 1 ? ` · each market about every ${S.cycle}s` : ''}`);
@@ -710,6 +771,7 @@
     LIVE.es.addEventListener('hello', (ev) => { const d = JSON.parse(ev.data); LIVE.client = d.client; LIVE.max = d.max || LIVE.max; watch(true); });
     LIVE.es.addEventListener('status', (ev) => { const d = JSON.parse(ev.data); LIVE.ws = d.ws; LIVE.error = d.error; LIVE.streaming = d.streaming; LIVE.waiting = d.waiting || 0; LIVE.limited = !!d.limited; liveStatus(); });
     LIVE.es.addEventListener('notice', (ev) => { const d = JSON.parse(ev.data); console.warn('Novig:', d.code, d.message); });
+    LIVE.es.addEventListener('gone', (ev) => { const d = JSON.parse(ev.data); markGone(d.marketId); });
     LIVE.es.addEventListener('book', (ev) => {
       const b = JSON.parse(ev.data);
       S.books.set(b.marketId, { book: b, at: Date.now(), live: true });

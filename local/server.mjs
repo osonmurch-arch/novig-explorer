@@ -155,6 +155,18 @@ const COST = { book: 16, upgrade: 32 };
 let limitedUntil = 0; // after a 429, add nothing until then
 const lastWanted = new Map(); // marketId -> last time a browser wanted it (subscriptions are kept a while: re-adding costs 16)
 const KEEP_MS = 10 * 60 * 1000;
+// Markets Novig no longer has (closed or settled). A batch subscribe fails as a whole when one market in it is
+// gone, so a failed batch is retried one market at a time to find which; those are skipped for 30 minutes.
+const batches = new Map(); // nonce -> marketIds sent in that subscribe
+const gone = new Map(); // marketId -> time it was found missing
+const singles = new Set(); // markets to retry alone
+const GONE_MS = 30 * 60 * 1000;
+function markGone(id, why) {
+  gone.set(id, Date.now());
+  singles.delete(id); pending.delete(id); subscribed.delete(id); books.delete(id);
+  broadcast('gone', { marketId: id, why });
+}
+const isGone = (id) => { const t = gone.get(id); if (!t) return false; if (Date.now() - t > GONE_MS) { gone.delete(id); return false; } return true; };
 function rateLimited(why) {
   bucket.tokens = 0;
   bucket.last = Date.now();
@@ -192,7 +204,7 @@ function sync() {
 
   // Keep subscriptions nobody wants right now (switching views shouldn't cost 16 tokens per market to come back),
   // but drop ones unwanted for 10 minutes, and make room under the cap, oldest-wanted first.
-  const add = [...want].filter((id) => !subscribed.has(id) && !pending.has(id));
+  const add = [...want].filter((id) => !subscribed.has(id) && !pending.has(id) && !isGone(id));
   const idle = [...subscribed].filter((id) => !want.has(id)).sort((a, b) => (lastWanted.get(a) || 0) - (lastWanted.get(b) || 0));
   const stale = idle.filter((id) => now - (lastWanted.get(id) || 0) > KEEP_MS);
   const over = Math.max(0, subscribed.size + pending.size + add.length - CFG.streamMarkets);
@@ -209,7 +221,15 @@ function sync() {
   if (batch.length) {
     bucket.tokens -= batch.length * COST.book;
     batch.forEach((id) => pending.add(id));
-    send({ nonce: ++nonce, subscribe: { markets: Object.fromEntries(batch.map((id) => [id, 'book'])) } });
+    // Markets under suspicion go alone, so one closed market can't sink the rest.
+    const alone = batch.filter((id) => singles.has(id));
+    const together = batch.filter((id) => !singles.has(id));
+    const groups = [...alone.map((id) => [id]), ...(together.length ? [together] : [])];
+    for (const g of groups) {
+      batches.set(++nonce, g);
+      send({ nonce, subscribe: { markets: Object.fromEntries(g.map((id) => [id, 'book'])) } });
+    }
+    if (batches.size > 500) for (const k of [...batches.keys()].slice(0, batches.size - 500)) batches.delete(k);
   }
   status();
   if (batch.length < add.length && room > batch.length) later(((COST.book - (tokens() % COST.book)) / bucket.rate) * 1000 + 200);
@@ -274,21 +294,48 @@ function onMessage(raw) {
   let msg;
   try { msg = JSON.parse(typeof raw === 'string' ? raw : Buffer.from(raw).toString('utf8')); } catch { return; }
   if (msg.code && msg.message) {
-    if (/RATE_LIMIT/.test(msg.code)) rateLimited('a subscribe was refused');
-    else console.log(`  ⚠ Novig: ${msg.code} — ${msg.message}`);
+    const sent = msg.nonce ? batches.get(msg.nonce) : null;
+    if (msg.nonce) batches.delete(msg.nonce);
+    if (/RATE_LIMIT/.test(msg.code)) {
+      rateLimited('a subscribe was refused');
+      (sent || [...pending]).forEach((id) => pending.delete(id));
+      later(limitedUntil - Date.now());
+      return;
+    }
+    if (/NOT_FOUND|CLOSED|SETTLED/.test(msg.code) && sent) {
+      bucket.tokens += sent.length * COST.book; // a refused subscribe isn't charged
+      if (sent.length === 1) {
+        markGone(sent[0], msg.code);
+        warnOnce('gone', `  ○ Skipping markets Novig has closed (${msg.code}). They come off the page automatically.`);
+      } else {
+        sent.forEach((id) => { pending.delete(id); singles.add(id); });
+      }
+      later(300);
+      return;
+    }
+    warnOnce('wscode' + msg.code, `  ⚠ Novig: ${msg.code} — ${msg.message}`);
     broadcast('notice', { code: msg.code, message: msg.message });
-    if (msg.nonce) { pending.clear(); later(/RATE_LIMIT/.test(msg.code) ? limitedUntil - Date.now() : 2000); }
+    (sent || [...pending]).forEach((id) => pending.delete(id));
+    later(5000);
     return;
   }
   if (msg.subscribed && msg.subscribed.markets) {
-    for (const id of Object.keys(msg.subscribed.markets)) { pending.delete(id); subscribed.add(id); }
+    for (const id of Object.keys(msg.subscribed.markets)) { pending.delete(id); singles.delete(id); subscribed.add(id); }
+    if (msg.nonce) batches.delete(msg.nonce);
   }
   const snap = msg.snapshot || {};
   for (const [id, m] of Object.entries(snap)) if (m && m.book) loadBook(id, m.book);
   const delta = msg.delta || {};
   for (const [id, m] of Object.entries(delta)) {
     if (m && m.book) applyDeltas(id, m.book);
-    if (m && m.lifecycle) broadcast('lifecycle', { marketId: id, lifecycle: m.lifecycle });
+    if (m && m.lifecycle) {
+      broadcast('lifecycle', { marketId: id, lifecycle: m.lifecycle });
+      const lc = m.lifecycle;
+      if ((lc.status && /CLOSED|SETTLED/.test(lc.status)) || (Array.isArray(lc.deltas) && lc.deltas.some((d) => /CLOSE|SETTLE/.test(String(d))))) {
+        send({ nonce: ++nonce, unsubscribe: [`market:${id}`] });
+        markGone(id, 'closed');
+      }
+    }
   }
 }
 
@@ -393,7 +440,7 @@ function broadcast(event, data) {
   for (const res of clients.values()) res.write(line);
 }
 function status() {
-  const want = wanted();
+  const want = new Set([...wanted()].filter((id) => !isGone(id)));
   const live = [...want].filter((id) => subscribed.has(id)).length;
   broadcast('status', { ws: wsState, error: wsError, streaming: live, waiting: Math.max(0, Math.min(want.size, CFG.streamMarkets) - live), limited: Date.now() < limitedUntil });
 }
@@ -463,7 +510,11 @@ const server = http.createServer(async (req, res) => {
     if (req.method !== 'GET' || !ALLOWED.some((re) => re.test(p))) return json(res, 403, { code: 'NOT_ALLOWED', message: 'This local server only forwards read-only routes.' });
     try {
       const r = await novig(p + url.search);
-      if (r.status !== 200 && r.status !== 304) {
+      if (r.status === 404 && /\/v3\/catalog\/markets\/[0-9a-f-]{36}\/book$/i.test(p)) {
+        const id = p.split('/')[4];
+        if (!isGone(id)) markGone(id, 'MARKET_NOT_FOUND');
+        warnOnce('gone', '  ○ Skipping markets Novig has closed. They come off the page automatically.');
+      } else if (r.status !== 200 && r.status !== 304) {
         const code = (r.json && r.json.code) || '';
         const msg = (r.json && r.json.message) || String(r.text || '').replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim().slice(0, 160);
         warnOnce(`${r.status}${code}${p.split('/').slice(0, 4).join('/')}`, `  ⚠ ${p} → ${r.status}${code ? ' ' + code : ''}${msg ? ': ' + msg : ''}`);
@@ -495,7 +546,7 @@ const server = http.createServer(async (req, res) => {
       let data;
       try { data = JSON.parse(body); } catch { return json(res, 400, { code: 'BAD_JSON' }); }
       if (!watchers.has(data.client)) return json(res, 404, { code: 'NO_CLIENT' });
-      const ids = (Array.isArray(data.markets) ? data.markets : []).filter((x) => /^[0-9a-f-]{36}$/i.test(x)).slice(0, CFG.streamMarkets);
+      const ids = (Array.isArray(data.markets) ? data.markets : []).filter((x) => /^[0-9a-f-]{36}$/i.test(x) && !isGone(x)).slice(0, CFG.streamMarkets);
       watchers.set(data.client, new Set(ids));
       sync();
       ids.forEach((mid) => { const b = bookJson(mid); if (b) clients.get(data.client).write(`event: book\ndata: ${JSON.stringify(b)}\n\n`); });
