@@ -427,7 +427,11 @@
       const j = await r.json();
       if (!j || !j.version) return false;
       if (!j.ok) {
-        setStatus(`Your local server is running but Novig refused the key (${j.status}${j.code ? ' ' + j.code : ''}${j.message ? ': ' + j.message : ''}). Using public data.`, true);
+        const why = j.management ? j.message : `${j.status || 'no answer'}${j.code ? ' ' + j.code : ''}${j.message ? ': ' + j.message : ''}`;
+        const note = $('#mk-keynote');
+        note.replaceChildren(el('b', {}, 'Your key isn’t being used. '), `Novig refused it (${why}), so these are public prices. `,
+          el('a', { href: '/local/diag', target: '_blank', rel: 'noopener' }, 'Run diagnostics'), ' for details, then restart start.cmd once it’s fixed.');
+        note.hidden = false;
         return false;
       }
       LIVE.on = true;

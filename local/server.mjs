@@ -387,7 +387,7 @@ const server = http.createServer(async (req, res) => {
     const c = KEY_OK ? { ok: true, status: 200 } : await checkKey();
     return json(res, c.ok ? 200 : 502, {
       ok: c.ok, version: VERSION, host: CFG.host, keyId: CFG.keyId.slice(0, 8) + '…', status: c.status,
-      code: c.code, message: c.message || '', stream: { ws: wsState, error: wsError, max: CFG.streamMarkets },
+      code: c.code, message: c.message || '', management: !!c.management, stream: { ws: wsState, error: wsError, max: CFG.streamMarkets },
     });
   }
 
