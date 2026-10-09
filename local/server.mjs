@@ -16,7 +16,7 @@ import { fileURLToPath } from 'node:url';
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const SITE = path.resolve(HERE, '..');
-const VERSION = '1.1.0';
+const VERSION = '1.2.0';
 
 /* ---------------- config ---------------- */
 function loadConfig() {
@@ -143,11 +143,23 @@ let ws = null;
 let wsState = 'idle';
 let wsError = '';
 let nonce = 0;
-let backoff = 1000;
+let backoff = 2000;
 const dirty = new Set();
 
-// Client-side model of the stream bucket: 512 tokens, ~4/s refill; book costs 16 per market, the upgrade 32.
-const bucket = { tokens: 512 - 32, cap: 512, rate: 4, last: Date.now() };
+// Client-side model of Novig's stream bucket: 512 tokens, refilling ~4/s. A market's book costs 16,
+// unsubscribe 1, opening the websocket 32. We can't read the real level, so we start cautiously (a
+// recent restart may have spent some), keep the model across reconnects, and zero it when Novig says 429.
+const bucket = { tokens: 256, cap: 512, rate: 4, last: Date.now() };
+const COST = { book: 16, upgrade: 32 };
+let limitedUntil = 0; // after a 429, add nothing until then
+const lastWanted = new Map(); // marketId -> last time a browser wanted it (subscriptions are kept a while: re-adding costs 16)
+const KEEP_MS = 10 * 60 * 1000;
+function rateLimited(why) {
+  bucket.tokens = 0;
+  bucket.last = Date.now();
+  limitedUntil = Date.now() + 8000;
+  warnOnce('stream429', `  ⚠ Novig's stream limit reached (${why}). Adding live markets gradually: about one every 4 seconds.`);
+}
 function tokens() {
   const now = Date.now();
   bucket.tokens = Math.min(bucket.cap, bucket.tokens + ((now - bucket.last) / 1000) * bucket.rate);
@@ -168,26 +180,40 @@ function send(obj) {
 }
 
 let syncTimer = null;
+function later(ms) { clearTimeout(syncTimer); syncTimer = setTimeout(sync, Math.max(250, ms)); }
 function sync() {
   clearTimeout(syncTimer);
   if (!ws || ws.readyState !== 1) return;
+  const now = Date.now();
   const want = wanted();
-  const drop = [...subscribed].filter((id) => !want.has(id));
-  if (drop.length) {
+  want.forEach((id) => lastWanted.set(id, now));
+  if (now < limitedUntil) return later(limitedUntil - now);
+
+  // Keep subscriptions nobody wants right now (switching views shouldn't cost 16 tokens per market to come back),
+  // but drop ones unwanted for 10 minutes, and make room under the cap, oldest-wanted first.
+  const add = [...want].filter((id) => !subscribed.has(id) && !pending.has(id));
+  const idle = [...subscribed].filter((id) => !want.has(id)).sort((a, b) => (lastWanted.get(a) || 0) - (lastWanted.get(b) || 0));
+  const stale = idle.filter((id) => now - (lastWanted.get(id) || 0) > KEEP_MS);
+  const over = Math.max(0, subscribed.size + pending.size + add.length - CFG.streamMarkets);
+  const drop = [...new Set([...stale, ...idle.slice(0, over)])];
+  if (drop.length && tokens() >= drop.length) {
+    bucket.tokens -= drop.length;
     send({ nonce: ++nonce, unsubscribe: drop.map((id) => `market:${id}`) });
     drop.forEach((id) => { subscribed.delete(id); books.delete(id); });
   }
-  const add = [...want].filter((id) => !subscribed.has(id) && !pending.has(id));
-  if (!add.length) return;
-  const can = Math.floor(tokens() / 16);
-  const batch = add.slice(0, Math.max(0, can));
+  if (!add.length) return status();
+  const room = Math.max(0, CFG.streamMarkets - subscribed.size - pending.size);
+  const can = Math.min(room, Math.floor(tokens() / COST.book));
+  const batch = add.slice(0, can);
   if (batch.length) {
-    bucket.tokens -= batch.length * 16;
+    bucket.tokens -= batch.length * COST.book;
     batch.forEach((id) => pending.add(id));
     send({ nonce: ++nonce, subscribe: { markets: Object.fromEntries(batch.map((id) => [id, 'book'])) } });
   }
-  if (batch.length < add.length) syncTimer = setTimeout(sync, Math.ceil(((16 - (tokens() % 16)) / bucket.rate) * 1000));
+  status();
+  if (batch.length < add.length && room > batch.length) later(((COST.book - (tokens() % COST.book)) / bucket.rate) * 1000 + 200);
 }
+setInterval(sync, 60000); // sweeps stale subscriptions
 
 function loadBook(marketId, snap) {
   const outcomes = new Map();
@@ -234,21 +260,23 @@ function applyDeltas(marketId, b) {
 }
 
 function resync(marketId) {
-  // A skipped seq: drop and resubscribe to get a fresh snapshot.
+  // A skipped seq: drop and resubscribe to get a fresh snapshot (the next sync re-adds it when tokens allow).
   console.log(`  ↻ gap on ${marketId.slice(0, 8)}…, resubscribing`);
+  bucket.tokens -= 1;
   send({ nonce: ++nonce, unsubscribe: [`market:${marketId}`] });
   subscribed.delete(marketId);
   books.delete(marketId);
-  setTimeout(sync, 250);
+  later(250);
 }
 
 function onMessage(raw) {
   let msg;
   try { msg = JSON.parse(typeof raw === 'string' ? raw : Buffer.from(raw).toString('utf8')); } catch { return; }
   if (msg.code && msg.message) {
-    console.log(`  ⚠ Novig: ${msg.code} — ${msg.message}`);
+    if (/RATE_LIMIT/.test(msg.code)) rateLimited('a subscribe was refused');
+    else console.log(`  ⚠ Novig: ${msg.code} — ${msg.message}`);
     broadcast('notice', { code: msg.code, message: msg.message });
-    if (msg.nonce) { pending.clear(); setTimeout(sync, 2000); }
+    if (msg.nonce) { pending.clear(); later(/RATE_LIMIT/.test(msg.code) ? limitedUntil - Date.now() : 2000); }
     return;
   }
   if (msg.subscribed && msg.subscribed.markets) {
@@ -300,6 +328,7 @@ function connect() {
     return retry();
   }
   ws = sock;
+  tokens(); bucket.tokens -= COST.upgrade;
   sock.binaryType = 'arraybuffer';
   // Node's WebSocket fires only "error" (no "close") when the upgrade is refused, and both when an open
   // socket drops. Either way, handle the failure exactly once per socket.
@@ -314,9 +343,12 @@ function connect() {
     else if (!wsError) wsError = `closed ${code}${reason ? ': ' + reason : ''}`;
     subscribed.clear(); pending.clear();
     failStreak += 1;
-    if (!wasLive && (failStreak === 1 || failStreak % 10 === 0)) {
+    if (!wasLive && (failStreak === 1 || failStreak % 10 === 0) && tokens() >= COST.upgrade * 2) {
+      // Asking Novig why costs another upgrade's tokens, so only when there's room for it.
+      tokens(); bucket.tokens -= COST.upgrade;
       probeUpgrade().then((p) => {
         if (p.status === 101) return;
+        if (p.status === 429) { rateLimited('the connection was refused'); backoff = Math.max(backoff, 20000); wsError = 'waiting for Novig’s stream limit to refill'; status(); return; }
         wsError = `Novig refused the stream: ${p.status || 'no answer'}${p.code ? ' ' + p.code : ''}${p.message ? ' — ' + p.message : ''}`;
         console.log('  ⚠ ' + wsError);
         const h = hint(p.status); if (h) console.log(h);
@@ -327,8 +359,7 @@ function connect() {
     retry();
   };
   sock.onopen = () => {
-    wsState = 'live'; wsError = ''; backoff = 1000; failStreak = 0;
-    bucket.tokens = Math.max(0, tokens() - 32);
+    wsState = 'live'; wsError = ''; backoff = 2000; failStreak = 0;
     console.log('  ● Streaming from Novig');
     subscribed.clear(); pending.clear();
     status();
@@ -342,8 +373,10 @@ function connect() {
   sock.onclose = (ev) => ended(ev.code, ev.reason);
 }
 function retry() {
-  setTimeout(connect, backoff);
-  backoff = Math.min(backoff * 2, 30000);
+  // Each attempt costs 32 stream tokens, refilled at 4/s: never retry faster than the bucket refills.
+  const wait = Math.max(backoff, ((COST.upgrade - Math.min(COST.upgrade, tokens())) / bucket.rate) * 1000);
+  setTimeout(connect, wait);
+  backoff = Math.min(backoff * 2, 60000);
 }
 
 /* ---------------- browser stream (Server-Sent Events) ---------------- */
@@ -359,7 +392,9 @@ function broadcast(event, data) {
   for (const res of clients.values()) res.write(line);
 }
 function status() {
-  broadcast('status', { ws: wsState, error: wsError, streaming: subscribed.size, waiting: Math.max(0, wanted().size - subscribed.size) });
+  const want = wanted();
+  const live = [...want].filter((id) => subscribed.has(id)).length;
+  broadcast('status', { ws: wsState, error: wsError, streaming: live, waiting: Math.max(0, Math.min(want.size, CFG.streamMarkets) - live), limited: Date.now() < limitedUntil });
 }
 setInterval(() => {
   if (!dirty.size) return;

@@ -294,7 +294,8 @@
     if (LIVE.ws === 'live') {
       badge.textContent = 'Live';
       badge.className = 'mode on';
-      setStatus(`Streaming ${LIVE.streaming} market${LIVE.streaming === 1 ? '' : 's'} live${LIVE.last ? ' · last change ' + clock(LIVE.last) : ''}${S.autoOn && S.pending ? ` · ${S.pending} others refreshed about every ${S.cycle || 1}s` : ''}`);
+      const joining = LIVE.waiting ? ` · ${LIVE.waiting} more joining as Novig's stream limit allows (about 1 every 4s)` : '';
+      setStatus(`Streaming ${LIVE.streaming} market${LIVE.streaming === 1 ? '' : 's'} live${joining}${LIVE.last ? ' · last change ' + clock(LIVE.last) : ''}${S.autoOn && S.pending ? ` · ${S.pending} others refreshed about every ${S.cycle || 1}s` : ''}`);
     } else {
       badge.textContent = 'Your key';
       badge.className = 'mode';
@@ -701,7 +702,7 @@
   function openStream() {
     LIVE.es = new EventSource('/local/stream');
     LIVE.es.addEventListener('hello', (ev) => { const d = JSON.parse(ev.data); LIVE.client = d.client; LIVE.max = d.max || LIVE.max; watch(true); });
-    LIVE.es.addEventListener('status', (ev) => { const d = JSON.parse(ev.data); LIVE.ws = d.ws; LIVE.error = d.error; LIVE.streaming = d.streaming; liveStatus(); });
+    LIVE.es.addEventListener('status', (ev) => { const d = JSON.parse(ev.data); LIVE.ws = d.ws; LIVE.error = d.error; LIVE.streaming = d.streaming; LIVE.waiting = d.waiting || 0; LIVE.limited = !!d.limited; liveStatus(); });
     LIVE.es.addEventListener('notice', (ev) => { const d = JSON.parse(ev.data); console.warn('Novig:', d.code, d.message); });
     LIVE.es.addEventListener('book', (ev) => {
       const b = JSON.parse(ev.data);
