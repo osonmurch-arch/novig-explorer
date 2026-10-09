@@ -27,16 +27,37 @@ function loadConfig() {
   cfg.port = Number(process.env.PORT || cfg.port || 8787);
   if (!cfg.keyId || !/^[0-9a-f-]{36}$/i.test(cfg.keyId)) fail('config.json: "keyId" should be your trading::read key ID (a UUID like 01a1…-…).');
   if (!cfg.keyFile) fail('config.json: "keyFile" should be the path to the private key .pem file for that key.');
-  const keyPath = path.resolve(HERE, cfg.keyFile);
-  if (!fs.existsSync(keyPath)) fail(`Can't find the key file at ${keyPath}`);
-  try { cfg.key = crypto.createPrivateKey(fs.readFileSync(keyPath)); } catch (e) { fail(`Couldn't read the key file as a private key PEM: ${e.message}`); }
+  let keyPath = path.resolve(HERE, cfg.keyFile);
+  // Notepad often saves "key.pem" as "key.pem.txt" when "Save as type" is left on Text Documents.
+  if (!fs.existsSync(keyPath) && fs.existsSync(keyPath + '.txt')) keyPath += '.txt';
+  if (!fs.existsSync(keyPath)) fail(`Can't find the key file at ${keyPath}\n  Check the folder and file name in "keyFile". Windows may be hiding a .txt on the end.`);
+  try { cfg.key = readKey(fs.readFileSync(keyPath, 'utf8')); } catch (e) { fail(`Couldn't read ${path.basename(keyPath)} as a private key: ${e.message}\n  Paste the whole key Novig showed you, including the -----BEGIN PRIVATE KEY----- and -----END PRIVATE KEY----- lines if it had them.`); }
   cfg.alg = cfg.key.asymmetricKeyType; // 'ed25519' or 'ec'
   if (!['ed25519', 'ec'].includes(cfg.alg)) fail(`Unsupported key type ${cfg.alg}; Novig keys are Ed25519 or P-256.`);
   cfg.streamMarkets = Math.min(Math.max(Number(cfg.streamMarkets || 30), 1), 2048);
   return cfg;
 }
 function fail(msg) { console.error('\n  ✖ ' + msg + '\n'); process.exit(1); }
+
+// Accepts a PEM (with BEGIN/END lines), or the bare base64 of a PKCS#8 key, or a bare 32-byte Ed25519 seed.
+// Tolerates a byte-order mark, Windows line endings and stray spaces from copy-paste.
+function readKey(text) {
+  const t = text.replace(/^﻿/, '').replace(/\r/g, '').trim();
+  if (/-----BEGIN [A-Z ]*PRIVATE KEY-----/.test(t)) {
+    const pem = t.replace(/-----(BEGIN|END) ([A-Z ]+)-----/g, '\n-----$1 $2-----\n').replace(/\n{2,}/g, '\n').trim() + '\n';
+    return crypto.createPrivateKey(pem);
+  }
+  if (/-----BEGIN [A-Z ]*PUBLIC KEY-----/.test(t)) throw new Error('that is a public key; the program needs the private one');
+  const der = Buffer.from(t.replace(/\s+/g, ''), 'base64');
+  if (der.length === 32) {
+    const prefix = Buffer.from('302e020100300506032b657004220420', 'hex'); // PKCS#8 wrapper for an Ed25519 seed
+    return crypto.createPrivateKey({ key: Buffer.concat([prefix, der]), format: 'der', type: 'pkcs8' });
+  }
+  if (der.length > 32) return crypto.createPrivateKey({ key: der, format: 'der', type: 'pkcs8' });
+  throw new Error('the file is empty or not a key');
+}
 const CFG = loadConfig();
+let KEY_OK = false;
 
 /* ---------------- NOVIG-V3 signing ----------------
    Six lines joined by \n, no trailing newline:
@@ -73,6 +94,23 @@ async function novig(pathAndQuery) {
   let json = null;
   try { json = text ? JSON.parse(text) : null; } catch { /* edge errors are HTML */ }
   return { status: res.status, json, text };
+}
+
+/* ---------------- key check ----------------
+   A trading or trading::read key can read the catalog. A management key can't (and can move money),
+   so it is refused here with a clear message rather than used. */
+async function checkKey() {
+  const r = await novig('/v3/types/sports').catch((e) => ({ status: 0, text: e.message, json: null }));
+  if (r.status === 200) return { ok: true, status: 200 };
+  const out = { ok: false, status: r.status, code: (r.json && r.json.code) || '', message: (r.json && r.json.message) || String(r.text || '').slice(0, 200) };
+  if (r.status === 403) {
+    const k = await novig('/v3/keys').catch(() => ({ status: 0 }));
+    if (k.status === 200) {
+      out.management = true;
+      out.message = 'This is your management key. It can move money and cannot read markets, so it is not used here. Use a trading::read key for this program.';
+    }
+  }
+  return out;
 }
 
 /* ---------------- read-only REST proxy ----------------
@@ -283,12 +321,10 @@ const server = http.createServer(async (req, res) => {
   if (!/^(localhost|127\.0\.0\.1)(:\d+)?$/.test(host) || (origin && !/^http:\/\/(localhost|127\.0\.0\.1)(:\d+)?$/.test(origin))) { res.writeHead(403); return res.end(); }
 
   if (url.pathname === '/local/status') {
-    const r = await novig('/v3/limits').catch((e) => ({ status: 0, text: e.message }));
-    const ok = r.status === 200;
-    return json(res, ok ? 200 : 502, {
-      ok, version: VERSION, host: CFG.host, keyId: CFG.keyId.slice(0, 8) + '…', status: r.status,
-      code: r.json && r.json.code, message: ok ? '' : (r.json && r.json.message) || r.text.slice(0, 200), limits: ok ? r.json : null,
-      stream: { ws: wsState, error: wsError, max: CFG.streamMarkets },
+    const c = KEY_OK ? { ok: true, status: 200 } : await checkKey();
+    return json(res, c.ok ? 200 : 502, {
+      ok: c.ok, version: VERSION, host: CFG.host, keyId: CFG.keyId.slice(0, 8) + '…', status: c.status,
+      code: c.code, message: c.message || '', stream: { ws: wsState, error: wsError, max: CFG.streamMarkets },
     });
   }
 
@@ -355,16 +391,21 @@ console.log(`  Key ${CFG.keyId.slice(0, 8)}… (${CFG.alg === 'ed25519' ? 'Ed255
 server.on('error', (e) => fail(e.code === 'EADDRINUSE' ? `Port ${CFG.port} is busy. Close the other copy, or set "port" in config.json.` : e.message));
 server.listen(CFG.port, '127.0.0.1', async () => {
   console.log(`  Open http://localhost:${CFG.port}  (Ctrl+C to stop)\n`);
-  const check = await novig('/v3/limits').catch((e) => ({ status: 0, text: e.message, json: null }));
-  if (check.status === 200) {
-    console.log('  ✔ Key accepted');
-  } else {
-    const code = (check.json && check.json.code) || '';
-    const msg = (check.json && check.json.message) || String(check.text || '').slice(0, 200);
-    console.log(`  ✖ Novig refused the key check (${check.status}${code ? ' ' + code : ''}): ${msg}`);
-    if (check.status === 451) console.log('    That is the location check: be in a state Novig serves, turn off any VPN, and open the Novig app on your phone so it geolocates.');
-    if (check.status === 401 || check.status === 403) console.log("    Check the key ID, that the .pem is that key's private half, and that your computer clock is correct.");
-    console.log('    The site still works; it uses public data until the key does.');
+  const check = await checkKey();
+  if (check.ok) {
+    KEY_OK = true;
+    console.log('  ✔ Key accepted: read access works');
+    connect();
+    return;
   }
-  connect();
+  if (check.management) {
+    console.log('  ✖ ' + check.message);
+    console.log('    Stopping the live stream. The site still works with public data.');
+    return;
+  }
+  console.log(`  ✖ Novig refused the key (${check.status}${check.code ? ' ' + check.code : ''}): ${check.message}`);
+  if (check.status === 451) console.log('    That is the location check: be in a state Novig serves, turn off any VPN, and open the Novig app on your phone so it geolocates.');
+  if (check.status === 401 || check.status === 403) console.log("    Check that keyId matches this private key, that you're on the right environment (paper vs production), and that your PC clock is correct.");
+  if (check.status === 0) console.log("    Couldn't reach Novig at all. Check your internet connection.");
+  console.log('    The site still works; it uses public data until the key does.');
 });
