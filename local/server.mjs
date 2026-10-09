@@ -123,7 +123,7 @@ async function checkKey() {
     const k = await novig('/v3/keys').catch(() => ({ status: 0 }));
     if (k.status === 200) {
       out.management = true;
-      out.message = 'This is your management key. It can move money and cannot read markets, so it is not used here. Use a trading::read key for this program.';
+      out.message = 'This is your management key. It can move money and cannot read markets, so it is not used here. Double-click make-read-key.cmd to create a read-only key from it.';
     }
   }
   return out;

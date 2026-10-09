@@ -44,6 +44,8 @@ Most changes to the content are edits to one JSON file. Every number on the page
 2. Double-click `local/start.cmd` (or run `node local/server.mjs`). The first run creates `local/config.json` and opens it.
 3. Fill in `keyId` (your `trading::read` key ID) and `keyFile` (the path to that key's `.pem`), save, and start it again.
 
+Only have the management key from novig.com (Profile → Settings → Novig API)? Put it in `config.json`, then double-click `local/make-read-key.cmd`. It uses that key once to create a read-only key on a subaccount (opening one if you have none; no money moves), saves it beside your management key, and switches `config.json` to it.
+
 It only forwards read-only routes: nothing that places orders or moves money. Novig's location check applies: no VPN, a state Novig serves, and a recent geolocation from the Novig app on your phone.
 
 ## Publishing

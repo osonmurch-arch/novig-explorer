@@ -430,7 +430,7 @@
         const why = j.management ? j.message : `${j.status || 'no answer'}${j.code ? ' ' + j.code : ''}${j.message ? ': ' + j.message : ''}`;
         const note = $('#mk-keynote');
         note.replaceChildren(el('b', {}, 'Your key isn’t being used. '), `Novig refused it (${why}), so these are public prices. `,
-          el('a', { href: '/local/diag', target: '_blank', rel: 'noopener' }, 'Run diagnostics'), ' for details, then restart start.cmd once it’s fixed.');
+          el('a', { href: '/local/diag', target: '_blank', rel: 'noopener' }, 'Run diagnostics'), j.management ? '. In the novig-explorer\\local folder, double-click make-read-key.cmd, then restart start.cmd.' : ' for details, then restart start.cmd once it’s fixed.');
         note.hidden = false;
         return false;
       }
