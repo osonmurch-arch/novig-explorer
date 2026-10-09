@@ -8,6 +8,7 @@
 // this computer: only Novig's API sees requests signed with it.
 
 import http from 'node:http';
+import https from 'node:https';
 import crypto from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
@@ -15,7 +16,7 @@ import { fileURLToPath } from 'node:url';
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const SITE = path.resolve(HERE, '..');
-const VERSION = '1.0.0';
+const VERSION = '1.1.0';
 
 /* ---------------- config ---------------- */
 function loadConfig() {
@@ -84,6 +85,21 @@ function sign(method, pathAndQuery, body = '') {
     ? crypto.sign(null, Buffer.from(canonical), CFG.key)
     : crypto.sign('sha256', Buffer.from(canonical), { key: CFG.key, dsaEncoding: 'der' });
   return { 'Novig-Key-Id': CFG.keyId, 'Novig-Timestamp': ts, 'Novig-Signature': sig.toString('base64') };
+}
+
+const seen = new Map();
+function warnOnce(key, line) {
+  const t = seen.get(key) || 0;
+  if (Date.now() - t < 15000) return;
+  seen.set(key, Date.now());
+  console.log(line);
+}
+function hint(status) {
+  if (status === 451) return '    → Location check: no VPN, a state Novig serves, and open the Novig app on your phone so it geolocates.';
+  if (status === 401) return "    → Signature or key not accepted: check keyId matches this key, and your PC clock (Settings → Time → Sync now).";
+  if (status === 403) return '    → Not allowed for this key, or Novig\'s edge blocked the request.';
+  if (status === 429) return '    → Rate limited; the app will slow down and retry.';
+  return '';
 }
 
 async function novig(pathAndQuery) {
@@ -247,36 +263,83 @@ function onMessage(raw) {
   }
 }
 
+// When the websocket fails, Node only says "error". This repeats the upgrade by hand to read Novig's answer.
+function probeUpgrade() {
+  return new Promise((resolve) => {
+    const u = new URL(CFG.host + '/v3/ws');
+    const mod = u.protocol === 'https:' ? https : http;
+    const req = mod.request({
+      host: u.hostname, port: u.port || (u.protocol === 'https:' ? 443 : 80), path: '/v3/ws', method: 'GET',
+      headers: { ...sign('GET', '/v3/ws'), Connection: 'Upgrade', Upgrade: 'websocket', 'Sec-WebSocket-Version': '13', 'Sec-WebSocket-Key': crypto.randomBytes(16).toString('base64') },
+    });
+    req.on('upgrade', (r, sock) => { sock.destroy(); resolve({ status: 101 }); });
+    req.on('response', (r) => {
+      let b = '';
+      r.on('data', (c) => { b += c; });
+      r.on('end', () => {
+        let j = null; try { j = JSON.parse(b); } catch { /* html */ }
+        resolve({ status: r.statusCode, code: (j && j.code) || '', message: (j && j.message) || b.replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim().slice(0, 200) });
+      });
+    });
+    req.on('error', (e) => resolve({ status: 0, message: e.message }));
+    req.setTimeout(10000, () => { req.destroy(); resolve({ status: 0, message: 'timed out' }); });
+    req.end();
+  });
+}
+let failStreak = 0;
+
 function connect() {
   wsState = 'connecting';
   status();
   const url = CFG.host.replace(/^http/, 'ws') + '/v3/ws';
+  let sock;
   try {
-    ws = new WebSocket(url, { headers: sign('GET', '/v3/ws') });
+    sock = new WebSocket(url, { headers: sign('GET', '/v3/ws') });
   } catch (e) {
     wsError = e.message;
     return retry();
   }
-  ws.binaryType = 'arraybuffer';
-  ws.onopen = () => {
-    wsState = 'live'; wsError = ''; backoff = 1000;
+  ws = sock;
+  sock.binaryType = 'arraybuffer';
+  // Node's WebSocket fires only "error" (no "close") when the upgrade is refused, and both when an open
+  // socket drops. Either way, handle the failure exactly once per socket.
+  let done = false;
+  const ended = (code, reason) => {
+    if (done) return;
+    done = true;
+    const wasLive = wsState === 'live';
+    if (wasLive) console.log(`  ○ Stream closed (${code}${reason ? ' ' + reason : ''})`);
+    wsState = 'down';
+    if (code === 1008) wsError = 'SLOW_CONSUMER: this computer fell behind the stream';
+    else if (!wsError) wsError = `closed ${code}${reason ? ': ' + reason : ''}`;
+    subscribed.clear(); pending.clear();
+    failStreak += 1;
+    if (!wasLive && (failStreak === 1 || failStreak % 10 === 0)) {
+      probeUpgrade().then((p) => {
+        if (p.status === 101) return;
+        wsError = `Novig refused the stream: ${p.status || 'no answer'}${p.code ? ' ' + p.code : ''}${p.message ? ' — ' + p.message : ''}`;
+        console.log('  ⚠ ' + wsError);
+        const h = hint(p.status); if (h) console.log(h);
+        status();
+      });
+    }
+    status();
+    retry();
+  };
+  sock.onopen = () => {
+    wsState = 'live'; wsError = ''; backoff = 1000; failStreak = 0;
     bucket.tokens = Math.max(0, tokens() - 32);
     console.log('  ● Streaming from Novig');
     subscribed.clear(); pending.clear();
     status();
     sync();
   };
-  ws.onmessage = (ev) => onMessage(ev.data);
-  ws.onerror = (ev) => { wsError = (ev && ev.message) || 'connection error'; };
-  ws.onclose = (ev) => {
-    if (wsState === 'live') console.log(`  ○ Stream closed (${ev.code}${ev.reason ? ' ' + ev.reason : ''})`);
-    wsState = 'down';
-    if (ev.code === 1008) wsError = 'SLOW_CONSUMER: this computer fell behind the stream';
-    else if (!wsError) wsError = `closed ${ev.code}${ev.reason ? ': ' + ev.reason : ''}`;
-    subscribed.clear(); pending.clear();
-    status();
-    retry();
+  sock.onmessage = (ev) => onMessage(ev.data);
+  sock.onerror = (ev) => {
+    wsError = (ev && (ev.message || (ev.error && ev.error.message))) || 'connection error';
+    setTimeout(() => { if (sock.readyState !== 1) ended(0, ''); }, 100);
   };
+  sock.onclose = (ev) => ended(ev.code, ev.reason);
 }
 function retry() {
   setTimeout(connect, backoff);
@@ -328,14 +391,52 @@ const server = http.createServer(async (req, res) => {
     });
   }
 
+  if (url.pathname === '/local/diag') {
+    const rows = [];
+    const t0 = Date.now();
+    const probe = async (label, p, count) => {
+      const r = await novig(p).catch((e) => ({ status: 0, text: e.message, json: null }));
+      const ok = r.status === 200;
+      const code = (r.json && r.json.code) || '';
+      const msg = ok ? count(r.json) : ((r.json && r.json.message) || String(r.text || '').replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim().slice(0, 200));
+      rows.push({ label, path: p, status: r.status, ok, detail: (code ? code + ': ' : '') + msg });
+      return r;
+    };
+    const n = (j) => (Array.isArray(j) ? `${j.length} items` : j && Array.isArray(j.items) ? `${j.items.length} items${j.next ? ' (more pages)' : ''}` : typeof j);
+    await probe('Key works (sports)', '/v3/types/sports', n);
+    await probe('Leagues', '/v3/types/leagues', (j) => n(j) + (Array.isArray(j) ? ': ' + j.slice(0, 6).join(', ') + '…' : ''));
+    const ev = await probe('NFL events', '/v3/catalog/events?league=NFL&limit=5', n);
+    const mk = await probe('NFL moneylines', '/v3/catalog/markets?league=NFL&marketType=MONEY&limit=3', n);
+    const first = mk.json && mk.json.items && mk.json.items[0];
+    if (first) await probe('One order book', `/v3/catalog/markets/${first.marketId}/book?depth=5`, (j) => `seq ${j.seq}, ${Object.keys(j.orders || {}).length} outcomes`);
+    const w = await probeUpgrade();
+    rows.push({ label: 'Websocket', path: '/v3/ws', status: w.status, ok: w.status === 101, detail: w.status === 101 ? 'accepted' : `${w.code ? w.code + ': ' : ''}${w.message || ''}` });
+    const esc = (x) => String(x).replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
+    const html = `<!doctype html><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Novig live: diagnostics</title>
+<style>body{font:14px/1.5 system-ui,sans-serif;margin:24px;color:#1d1d1b;background:#f7f6f2}table{border-collapse:collapse;background:#fff;width:100%;max-width:1000px}td,th{border:1px solid #e4e2da;padding:6px 10px;text-align:left;vertical-align:top}code{font-family:ui-monospace,monospace;font-size:12px}.ok{color:#1d7a43;font-weight:600}.bad{color:#b3261e;font-weight:600}p{max-width:1000px;color:#6b6a64}</style>
+<h1 style="font-weight:500">Novig live: diagnostics</h1>
+<p>Server ${esc(VERSION)} on Node ${esc(process.version)} · ${esc(CFG.host)} · key ${esc(CFG.keyId.slice(0, 8))}… (${CFG.alg === 'ed25519' ? 'Ed25519' : 'P-256'}) · clock offset vs Novig ${Math.round(clockSkew / 1000)} s · took ${Date.now() - t0} ms. Nothing secret is shown here.</p>
+<table><tr><th>Check</th><th>Route</th><th>Result</th><th>Detail</th></tr>${rows.map((r) => `<tr><td>${esc(r.label)}</td><td><code>${esc(r.path)}</code></td><td class="${r.ok ? 'ok' : 'bad'}">${r.ok ? 'OK' : esc(r.status || 'no answer')}</td><td>${esc(r.detail)}</td></tr>`).join('')}</table>
+<p>Stream right now: ${esc(wsState)}${wsError ? ' — ' + esc(wsError) : ''}. Refresh this page to run the checks again.</p>`;
+    res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8', 'Cache-Control': 'no-store' });
+    return res.end(html);
+  }
+
   if (url.pathname.startsWith('/local/api/')) {
     const p = url.pathname.slice('/local/api'.length);
     if (req.method !== 'GET' || !ALLOWED.some((re) => re.test(p))) return json(res, 403, { code: 'NOT_ALLOWED', message: 'This local server only forwards read-only routes.' });
     try {
       const r = await novig(p + url.search);
+      if (r.status !== 200 && r.status !== 304) {
+        const code = (r.json && r.json.code) || '';
+        const msg = (r.json && r.json.message) || String(r.text || '').replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim().slice(0, 160);
+        warnOnce(`${r.status}${code}${p.split('/').slice(0, 4).join('/')}`, `  ⚠ ${p} → ${r.status}${code ? ' ' + code : ''}${msg ? ': ' + msg : ''}`);
+        const h = hint(r.status); if (h) warnOnce('hint' + r.status, h);
+      }
       res.writeHead(r.status, { 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': 'no-store' });
       return res.end(r.json ? JSON.stringify(r.json) : JSON.stringify({ code: 'UPSTREAM', message: r.text.slice(0, 300) }));
     } catch (e) {
+      warnOnce('unreach', `  ⚠ Can't reach Novig: ${e.message}${e.cause ? ' (' + (e.cause.code || e.cause.message) + ')' : ''}`);
       return json(res, 502, { code: 'UNREACHABLE', message: e.message });
     }
   }
@@ -390,7 +491,8 @@ console.log(`\n  Novig Explorer — local live server ${VERSION}`);
 console.log(`  Key ${CFG.keyId.slice(0, 8)}… (${CFG.alg === 'ed25519' ? 'Ed25519' : 'P-256'}) → ${CFG.host}`);
 server.on('error', (e) => fail(e.code === 'EADDRINUSE' ? `Port ${CFG.port} is busy. Close the other copy, or set "port" in config.json.` : e.message));
 server.listen(CFG.port, '127.0.0.1', async () => {
-  console.log(`  Open http://localhost:${CFG.port}  (Ctrl+C to stop)\n`);
+  console.log(`  Open http://localhost:${CFG.port}  (Ctrl+C to stop)`);
+  console.log(`  Problems? Open http://localhost:${CFG.port}/local/diag\n`);
   const check = await checkKey();
   if (check.ok) {
     KEY_OK = true;

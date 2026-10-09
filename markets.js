@@ -26,7 +26,7 @@
      Browsers can't read Retry-After here, so a 429 waits 1.5 s and retries. */
   const bucket = { tokens: 6, cap: 6, rate: 1.8, last: performance.now() };
   // Local live mode (your key, via local/server.mjs): the signed read bucket is 64 burst, 16/s.
-  const LIVE = { on: false, client: null, max: 30, es: null, watching: [], ws: 'idle', error: '', streaming: 0, last: null };
+  const LIVE = { restDown: false, keyProblem: '', on: false, client: null, max: 30, es: null, watching: [], ws: 'idle', error: '', streaming: 0, last: null };
   const queue = [];
   let pumping = false;
   function take() {
@@ -49,7 +49,8 @@
   }
   async function run(job) {
     try {
-      const res = await fetch((LIVE.on ? '/local/api/v3' : API) + job.path, { cache: 'no-store' });
+      const useKey = LIVE.on && !LIVE.restDown;
+      const res = await fetch((useKey ? '/local/api/v3' : API) + job.path, { cache: 'no-store' });
       if (res.status === 429 && job.tries < 4) {
         job.tries += 1;
         bucket.tokens = Math.min(bucket.tokens, 0);
@@ -60,8 +61,19 @@
       }
       if (!res.ok) {
         let code = '';
-        try { code = (await res.json()).code || ''; } catch { /* not json */ }
-        throw new Error(`${res.status}${code ? ' ' + code : ''}`);
+        let message = '';
+        try { const j = await res.json(); code = j.code || ''; message = j.message || ''; } catch { /* not json */ }
+        if (useKey && res.status !== 404) {
+          // Novig refused the keyed request: fall back to the public routes so prices still show.
+          LIVE.restDown = true;
+          LIVE.keyProblem = `${res.status}${code ? ' ' + code : ''}${message ? ': ' + message.slice(0, 120) : ''}`;
+          Object.assign(bucket, { tokens: Math.min(bucket.tokens, 6), cap: 6, rate: 1.8 });
+          liveStatus();
+          queue.unshift(job);
+          pump();
+          return;
+        }
+        throw new Error(`${res.status}${code ? ' ' + code : ''}${message && LIVE.on ? ': ' + message.slice(0, 120) : ''}`);
       }
       job.resolve(await res.json());
     } catch (err) {
@@ -137,6 +149,7 @@
     auto: null,
     loading: false,
     gen: 0,
+    problem: '',
   };
 
   const root = $('#markets');
@@ -167,8 +180,10 @@
       leagueSel.replaceChildren(...leagues.map((l) => new Option(l, l)));
       if (!leagues.includes(S.league)) S.league = leagues[0];
       leagueSel.value = S.league;
-    } catch {
+    } catch (err) {
       leagueSel.replaceChildren(new Option(S.league, S.league));
+      S.problem = `Couldn’t load the league list (${err.message}).`;
+      liveStatus();
     }
   }
 
@@ -186,6 +201,7 @@
       ]);
       if (gen !== S.gen) return;
       S.events = events.filter(isOpen).sort((a, b) => a.startsTs - b.startsTs);
+      if (S.problem.startsWith('Couldn’t load ' + S.league) || S.problem.startsWith('Couldn’t load the league')) S.problem = '';
       money.forEach((m) => { if (m.status === 'OPEN' && !S.money.has(m.eventId)) S.money.set(m.eventId, m); });
       S.loading = false;
       draw();
@@ -194,7 +210,8 @@
       if (gen !== S.gen) return;
       S.loading = false;
       draw();
-      setStatus(`Couldn’t reach Novig (${err.message}). Check your connection and try Refresh.`, true);
+      if (LIVE.on) { S.problem = `Couldn’t load ${S.league} from Novig (${err.message}).`; liveStatus(); }
+      else setStatus(`Couldn’t reach Novig (${err.message}). Check your connection and try Refresh.`, true);
     }
   }
 
@@ -238,6 +255,20 @@
   function liveStatus() {
     if (!LIVE.on) return;
     const badge = $('#mk-mode');
+    if (S.problem) {
+      badge.textContent = 'Your key';
+      badge.className = 'mode';
+      status.classList.add('fail');
+      status.replaceChildren(S.problem + ' ', el('a', { href: '/local/diag', target: '_blank', rel: 'noopener' }, 'Run diagnostics'), '. The black server window shows the details too.');
+      return;
+    }
+    if (LIVE.restDown && LIVE.ws !== 'live') {
+      badge.textContent = 'Public';
+      badge.className = 'mode';
+      status.classList.add('fail');
+      status.replaceChildren(`Novig refused your key (${LIVE.keyProblem}), so these are public prices${S.loadedAt ? ' as of ' + clock(S.loadedAt) : ''}. `, el('a', { href: '/local/diag', target: '_blank', rel: 'noopener' }, 'Run diagnostics'), '.');
+      return;
+    }
     if (LIVE.ws === 'live') {
       badge.textContent = 'Live';
       badge.className = 'mode on';
@@ -477,7 +508,15 @@
     clearTimeout(searchTimer);
     searchTimer = setTimeout(() => refreshBooks(), 400);
   });
-  $('#mk-refresh').addEventListener('click', () => { S.books.clear(); draw(); refreshBooks(); });
+  $('#mk-refresh').addEventListener('click', () => {
+    if (LIVE.on && LIVE.restDown) {
+      // Try the key again.
+      LIVE.restDown = false; LIVE.keyProblem = '';
+      Object.assign(bucket, { tokens: 48, cap: 48, rate: 14 });
+      if (S.problem) { S.problem = ''; loadLeagues().then(loadLeague); return; }
+    }
+    S.books.clear(); draw(); refreshBooks();
+  });
   $('#mk-auto').addEventListener('change', (ev) => {
     clearInterval(S.auto);
     S.auto = ev.target.checked ? setInterval(() => { if (!document.hidden && !root.hidden) refreshBooks(); }, 30000) : null;
