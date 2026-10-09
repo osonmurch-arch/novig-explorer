@@ -166,6 +166,9 @@
     pollGen: 0,
     inflight: new Set(),
     oneSided: false,
+    moreOpen: new Set(), // "<eventId>:<type>" whose "Other lines" fold-out is open
+    mkEvent: new Map(), // marketId -> eventId, for markets of opened events
+    dirtyEvents: new Set(),
     scan: { markets: [], loaded: false, loading: false, scope: store.get('nv-scope') || 'main', league: '', error: '' },
   };
 
@@ -306,7 +309,14 @@
     if (!S.eventMarkets.has(e.eventId)) {
       try {
         const ms = await pages(`/catalog/markets?event=${e.eventId}&limit=500`, 2);
-        S.eventMarkets.set(e.eventId, ms.filter((m) => m.eventId === e.eventId && m.status === 'OPEN'));
+        const open = ms.filter((m) => m.eventId === e.eventId && m.status === 'OPEN');
+        S.eventMarkets.set(e.eventId, open);
+        open.forEach((m) => S.mkEvent.set(m.marketId, e.eventId));
+        if (isTennis(e)) {
+          watch();
+          if (S.autoOn) startPolling();
+          else open.filter((m) => TENNIS_TYPES.includes(m.marketType)).forEach((m) => getBook(m.marketId).then(() => markDirty(m.marketId)).catch(() => {}));
+        }
       } catch (err) {
         S.eventMarkets.set(e.eventId, { error: err.message });
       }
@@ -364,11 +374,73 @@
     return chip;
   }
 
+  /* ---------- tennis: Moneyline, Spread, Total; tightest lines first ---------- */
+  const TENNIS_TYPES = ['MONEY', 'SPREAD', 'TOTAL'];
+  const isTennis = (e) => /TENNIS/i.test(e.sport || '') || /^(ATP|WTA)$/i.test(e.league || '');
+  function widthOf(m) {
+    const b = S.books.get(m.marketId);
+    if (!b || !b.book) return { known: false };
+    const g = gapOf(m, b.book);
+    if (!g) return { known: false };
+    return g.oneSided ? { known: true, oneSided: true, cents: Infinity } : { known: true, oneSided: false, cents: g.cents };
+  }
+  function widthChip(m) {
+    const w = widthOf(m);
+    const chip = el('span', { class: 'gap w' + (w.known && !w.oneSided && w.cents > S.threshold + 1e-9 ? ' wide' : ''), title: 'Market width: 1 − both sides’ best bids' });
+    chip.textContent = !w.known ? 'width …' : w.oneSided ? 'one-sided' : 'Width ' + gapText(w.cents);
+    return chip;
+  }
+  function markDirty(marketId) {
+    const ev = S.mkEvent.get(marketId);
+    if (ev && S.open.has(ev)) S.dirtyEvents.add(ev);
+  }
+  function tennisMarkets(eventId) {
+    const ms = S.eventMarkets.get(eventId);
+    return Array.isArray(ms) ? ms.filter((m) => TENNIS_TYPES.includes(m.marketType)) : [];
+  }
+  // The lines tied for the narrowest width, and the rest.
+  function splitTight(ms) {
+    const known = ms.map((m) => ({ m, w: widthOf(m) }));
+    const widths = known.filter((x) => x.w.known && !x.w.oneSided).map((x) => x.w.cents);
+    if (!widths.length) return { min: null, tight: [], rest: ms };
+    const min = Math.min(...widths);
+    const tight = known.filter((x) => x.w.known && !x.w.oneSided && Math.abs(x.w.cents - min) < 1e-9).map((x) => x.m);
+    return { min, tight, rest: ms.filter((m) => !tight.includes(m)) };
+  }
+  const byStrike = (a, b) => (num(a.strike) || 0) - (num(b.strike) || 0) || a.description.localeCompare(b.description);
+
+  function tennisDetail(e, ms) {
+    const pick = (t) => ms.filter((m) => m.marketType === t).sort(byStrike);
+    const loaded = (list) => list.filter((m) => widthOf(m).known).length;
+    const section = (title, list, ladder, type) => {
+      if (!list.length) return null;
+      const head = (extra) => el('div', { class: 'tn-h' }, el('b', {}, title), el('span', { class: 'muted' }, extra));
+      if (!ladder) return el('div', { class: 'tn-sec' }, head(''), el('div', { class: 'mk-rows' }, list.map((m) => marketRow(m))));
+      const { min, tight, rest } = splitTight(list);
+      const key = e.eventId + ':' + type;
+      const n = loaded(list);
+      const note = min === null
+        ? (n < list.length ? ` · loading widths ${n} of ${list.length}` : ' · no two-sided lines')
+        : ` · tightest ${gapText(min)}${tight.length > 1 ? ` (${tight.length} lines tied)` : ''}${n < list.length ? ` · ${n} of ${list.length} loaded` : ''}`;
+      const more = el('details', { class: 'tn-more', open: S.moreOpen.has(key) ? true : null },
+        el('summary', {}, `Other lines (${rest.length})`),
+        el('div', { class: 'mk-rows' }, rest.map((m) => marketRow(m))));
+      more.addEventListener('toggle', () => { if (more.open) S.moreOpen.add(key); else S.moreOpen.delete(key); });
+      return el('div', { class: 'tn-sec' }, head(note),
+        tight.length ? el('div', { class: 'mk-rows' }, tight.map((m) => marketRow(m))) : el('div', { class: 'mk-rows' }, el('div', { class: 'tn-wait muted' }, el('span', { class: 'skel' }, 'Finding the tightest line'))),
+        rest.length ? more : null);
+    };
+    const parts = [section('Moneyline', pick('MONEY'), false, 'MONEY'), section('Spread', pick('SPREAD'), true, 'SPREAD'), section('Total', pick('TOTAL'), true, 'TOTAL')].filter(Boolean);
+    return el('div', { class: 'ev-body', 'data-body': e.eventId },
+      parts.length ? parts : el('p', { class: 'muted note' }, 'No moneyline, spread or total markets open.'));
+  }
+
   function eventDetail(e) {
     const ms = S.eventMarkets.get(e.eventId);
     if (!ms) return el('div', { class: 'ev-body' }, el('span', { class: 'skel' }, 'Loading markets for this event'));
     if (ms.error) return el('div', { class: 'ev-body fail' }, 'Couldn’t load markets: ' + ms.error);
     if (!ms.length) return el('div', { class: 'ev-body muted' }, 'No open markets.');
+    if (isTennis(e)) return tennisDetail(e, ms);
     const groups = new Map();
     ms.forEach((m) => { if (!groups.has(m.marketType)) groups.set(m.marketType, []); groups.get(m.marketType).push(m); });
     const order = ['MONEY', 'SPREAD', 'TOTAL', 'TEAM_TOTAL'];
@@ -390,7 +462,7 @@
     const qs = b && b.book ? quote(m, b.book) : null;
     const row = el('div', { class: 'mk' + (isOpenBook ? ' sel' : '') },
       el('button', { class: 'mk-btn', type: 'button', 'aria-expanded': String(isOpenBook), onclick: () => openBook(m) },
-        el('span', { class: 'mk-desc' }, m.description),
+        el('span', { class: 'mk-desc' }, m.description, m.outcomes && m.outcomes.length === 2 && (b || S.mkEvent.has(m.marketId)) ? widthChip(m) : ''),
         qs ? el('span', { class: 'mk-q' }, qs.map((q) => `${q.outcome.name} ${q.ask ? american(q.ask.price) : '—'}`).join('  ·  ')) : el('span', { class: 'mk-q muted' }, isOpenBook ? 'Loading…' : 'Show book')));
     if (isOpenBook) row.append(bookView(m, b));
     return row;
@@ -418,6 +490,15 @@
       el('p', { class: 'note' }, `Bids are resting orders to buy that side. Buying one side now fills against the other side's best bid, so its price is 1 − that bid. Each contract pays $0.01. ${fee} ${b.live ? 'Live, updated ' : 'Snapshot from '}${new Date(b.at).toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit', second: '2-digit' })}.`));
   }
 
+  function drawEventBody(eventId) {
+    const card = list.querySelector(`#ev-${CSS.escape(eventId)}`);
+    const e = S.events.find((x) => x.eventId === eventId);
+    if (!card || !e || !S.open.has(eventId)) return;
+    const old = card.querySelector('.ev-body');
+    const fresh = eventDetail(e);
+    if (old) old.replaceWith(fresh); else card.append(fresh);
+  }
+
   function drawRowPrices(marketId) {
     const slot = list.querySelector(`.ev-prices[data-market="${marketId}"]`);
     if (!slot) return;
@@ -443,7 +524,7 @@
     $('#mk-gapbar').hidden = S.view !== 'gaps';
     if (S.view === 'gaps') { drawGaps(); window.scrollTo(0, scrollY); return; }
     const evs = visibleEvents();
-    $('#mk-count').textContent = `${evs.length} ${S.view === 'games' ? 'games' : 'futures'}`;
+    $('#mk-count').textContent = `${evs.length} ${S.view === 'games' ? (evs.length === 1 ? 'game' : 'games') : 'futures'}`;
     list.replaceChildren(...(evs.length ? evs.map(eventRow) : [el('div', { class: 'empty' }, S.events.length ? 'Nothing matches.' : `No open ${S.league} events right now.`)]));
     drawLiveMarks();
     window.scrollTo(0, scrollY);
@@ -540,6 +621,7 @@
   function candidates() {
     const ids = [];
     if (S.openBook) ids.push(S.openBook);
+    if (S.view !== 'gaps') for (const ev of S.open) { const e = S.events.find((x) => x.eventId === ev); if (e && isTennis(e)) tennisMarkets(ev).forEach((m) => ids.push(m.marketId)); }
     if (S.view === 'gaps') S.scan.markets.forEach((m) => ids.push(m.marketId));
     else visibleEvents().forEach((e) => { const m = S.money.get(e.eventId); if (m) ids.push(m.marketId); });
     return ids;
@@ -566,6 +648,7 @@
       S.inflight.add(id);
       try {
         await getBook(id);
+        markDirty(id);
         drawRowPrices(id);
         if (S.openBook === id && S.view !== 'gaps') drawOpenBook();
       } catch { /* shown via status */ }
@@ -586,6 +669,7 @@
     tickN += 1;
     if (S.autoOn) S.cycle = Math.max(1, Math.round((S.pending || 0) / bucket.rate));
     if (S.view === 'gaps') { drawGaps(); if (tickN % 5 === 0) watch(); }
+    else if (S.dirtyEvents.size) { const evs = [...S.dirtyEvents]; S.dirtyEvents.clear(); evs.forEach(drawEventBody); if (tickN % 5 === 0) watch(); }
     if (LIVE.on) liveStatus(); else if (S.autoOn && S.books.size && !S.loading && !S.problem) setStatus(`Updating every second · public data, no key${S.cycle > 1 ? ` · each market about every ${S.cycle}s` : ''}`);
   }, 1000);
 
@@ -624,6 +708,7 @@
       S.books.set(b.marketId, { book: b, at: Date.now(), live: true });
       LIVE.last = new Date();
       drawRowPrices(b.marketId);
+      markDirty(b.marketId);
       if (S.openBook === b.marketId) drawOpenBook();
       liveStatus();
     });
@@ -639,6 +724,13 @@
       const ids = [];
       const add = (id) => { if (id && !ids.includes(id) && ids.length < LIVE.max) ids.push(id); };
       add(S.openBook);
+      if (S.view !== 'gaps') for (const ev of S.open) {
+        const e = S.events.find((x) => x.eventId === ev);
+        if (!e || !isTennis(e)) continue;
+        const tm = tennisMarkets(ev);
+        tm.filter((m) => m.marketType === 'MONEY').forEach((m) => add(m.marketId));
+        ['SPREAD', 'TOTAL'].forEach((t) => splitTight(tm.filter((m) => m.marketType === t)).tight.forEach((m) => add(m.marketId)));
+      }
       if (S.view === 'gaps' && S.scan.loaded) {
         const gapped = gapRows().map((r) => r.m.marketId);
         const keep = new Set(gapped);
