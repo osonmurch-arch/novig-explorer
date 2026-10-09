@@ -1,0 +1,26 @@
+[
+ {
+  "schedule": "Game market",
+  "coefficient": 0.03,
+  "maker_credit": 0.5,
+  "charged": "Only while live (in-game)"
+ },
+ {
+  "schedule": "NCAAF, MLB, NHL game (from Oct 8, 2026)",
+  "coefficient": 0.06,
+  "maker_credit": 0.5,
+  "charged": "Only while live (in-game)"
+ },
+ {
+  "schedule": "Futures market",
+  "coefficient": 0.06,
+  "maker_credit": 0.7,
+  "charged": "Always, including pre-game"
+ },
+ {
+  "schedule": "RFQ parlay (taker)",
+  "coefficient": 0.1,
+  "maker_credit": 0,
+  "charged": "Every execution; fee = c \u00d7 wager \u00d7 collateral \u00f7 (wager + collateral)"
+ }
+]

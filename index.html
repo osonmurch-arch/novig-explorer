@@ -1,0 +1,215 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Novig v3 API Explorer</title>
+  <meta name="description" content="An unofficial explorer for Novig's v3 exchange API: routes, keys, throttles, fees, order types and the quickstart.">
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='7' fill='%23146c5a'/%3E%3Cpath d='M9 23V9l14 14V9' stroke='white' stroke-width='3.2' fill='none' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&family=JetBrains+Mono:wght@400;600&family=Source+Serif+4:opsz,wght@8..60,400;8..60,500&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <div class="wrap">
+    <header class="head">
+      <div class="head-row">
+        <h1>Novig v3 API</h1>
+        <button class="theme" type="button" aria-label="Toggle dark mode" title="Toggle dark mode"><svg viewBox="0 0 16 16" aria-hidden="true"><circle cx="8" cy="8" r="6.5" fill="none" stroke="currentColor" stroke-width="1.5"/><path d="M8 1.5a6.5 6.5 0 0 1 0 13z" fill="currentColor"/></svg></button>
+      </div>
+      <p class="take" id="takeaway"><span class="skel">Loading the API reference…</span></p>
+    </header>
+
+    <section class="tiles" id="tiles" aria-label="At a glance"></section>
+
+    <nav class="tabs" role="tablist" aria-label="Sections">
+      <button class="tab" role="tab" id="tab-routes" data-page="routes" aria-selected="true">Routes</button>
+      <button class="tab" role="tab" id="tab-limits" data-page="limits" aria-selected="false">Limits and streaming</button>
+      <button class="tab" role="tab" id="tab-fees" data-page="fees" aria-selected="false">Fees and orders</button>
+      <button class="tab" role="tab" id="tab-start" data-page="start" aria-selected="false">Getting started</button>
+    </nav>
+
+    <!-- ROUTES -->
+    <main>
+    <section class="page" id="routes" role="tabpanel" aria-labelledby="tab-routes">
+      <div class="card">
+        <h2>Routes by group</h2>
+        <p class="note">Click a bar to filter the table to that group. Click it again to clear.</p>
+        <div class="chart short" id="chart-groups"></div>
+      </div>
+      <div class="card">
+        <h2>Every route</h2>
+        <p class="note">Key is the scope that can call it. Throttle is the bucket its cost draws from. Click a row for details.</p>
+        <div class="tools">
+          <input type="search" id="q" placeholder="Search, e.g. orders, history, book" aria-label="Search routes">
+          <select id="grp" aria-label="Group"></select>
+          <select id="key" aria-label="Key">
+            <option value="">Any key</option>
+            <option value="management">Management key</option>
+            <option value="trading">Trading key</option>
+            <option value="read">Works with a read-only key</option>
+          </select>
+          <span class="count" id="count"></span>
+        </div>
+        <div class="scroll">
+          <table class="table" id="table-routes">
+            <thead><tr>
+              <th><button data-k="method">Method</button></th>
+              <th><button data-k="path">Path</button></th>
+              <th class="hide-sm"><button data-k="name">Does</button></th>
+              <th class="hide-sm"><button data-k="keys">Key</button></th>
+              <th class="hide-sm"><button data-k="throttle">Throttle</button></th>
+              <th class="hide-sm"><button data-k="cost">Cost (tokens)</button></th>
+            </tr></thead>
+            <tbody></tbody>
+          </table>
+        </div>
+      </div>
+    </section>
+
+    <!-- LIMITS -->
+    <section class="page" id="limits" role="tabpanel" aria-labelledby="tab-limits" hidden>
+      <div class="card">
+        <h2>Throttle buckets</h2>
+        <p class="note">Each key gets these token buckets. Capacity is the burst; tokens refill at the rate shown. Going over returns 429 with a Retry-After header. Live values: <code>GET /v3/limits</code>.</p>
+        <div class="scroll auto">
+          <table class="table" id="table-throttle">
+            <thead><tr><th>Bucket</th><th>Burst capacity</th><th class="n">Refill / sec</th><th class="n">Empty to full</th><th class="hide-md">Used for</th></tr></thead>
+            <tbody></tbody>
+          </table>
+        </div>
+      </div>
+      <div class="grid">
+        <div class="card">
+          <h2>Websocket channel weights</h2>
+          <p class="note">Tokens charged from the stream bucket per subscribed market or event. Trades, bbo and book include lifecycle.</p>
+          <div class="legend" id="ws-legend"></div>
+          <div class="chart" id="chart-ws"></div>
+        </div>
+        <div class="card">
+          <h2>Hard limits</h2>
+          <p class="note">Caps on keys, batches, connections and signing.</p>
+          <table class="table" id="table-hard">
+            <thead><tr><th>Limit</th><th class="n">Value</th><th>Unit</th></tr></thead>
+            <tbody></tbody>
+          </table>
+        </div>
+      </div>
+    </section>
+
+    <!-- FEES -->
+    <section class="page" id="fees" role="tabpanel" aria-labelledby="tab-fees" hidden>
+      <div class="grid">
+        <div class="card">
+          <h2>Taker fee by price</h2>
+          <p class="note">Fee = c × P × (1 − P) × contracts × 1¢, shown per 1,000 contracts. Highest at 0.50, near zero at the tails. Makers never pay.</p>
+          <div class="legend" id="curve-legend"></div>
+          <div class="chart" id="chart-curve"></div>
+        </div>
+        <div class="card">
+          <h2>Price grid</h2>
+          <p class="note">Every submittable price, as a probability. Finer steps at the tails; off-grid prices return INVALID_PRICE.</p>
+          <div class="chart short" id="chart-grid"></div>
+          <table class="table" id="table-grid">
+            <thead><tr><th>Band</th><th class="n">From</th><th class="n">To</th><th class="n">Step</th><th class="n">Prices</th></tr></thead>
+            <tbody></tbody>
+          </table>
+        </div>
+      </div>
+      <div class="card">
+        <h2>Fee calculator</h2>
+        <p class="note">Pick a schedule, price and size to see what a taker pays and what the maker earns back.</p>
+        <div class="calc">
+          <label>Schedule <select id="c-sched"></select></label>
+          <label>Price <input id="c-price" type="number" min="0.001" max="0.999" step="0.001" value="0.5"></label>
+          <label>Contracts <input id="c-qty" type="number" min="1" step="1" value="10000"></label>
+          <label class="check"><input id="c-live" type="checkbox" checked> Event is live</label>
+        </div>
+        <div class="calc-out" id="c-out"></div>
+      </div>
+      <div class="card">
+        <h2>Fee schedules</h2>
+        <p class="note">The maker earns maker credit × the taker's fee on the same fill. Check columns are a 10,000-contract fill at 0.50. In code, read the coefficient from each market's <code>fee</code> field.</p>
+        <div class="scroll auto">
+          <table class="table" id="table-fees">
+            <thead><tr><th>Schedule</th><th class="n">Coefficient</th><th class="n">Maker credit</th><th class="hide-md">Charged</th><th class="n">Taker fee, 10k @ 0.50</th><th class="n">Maker credit, 10k @ 0.50</th></tr></thead>
+            <tbody></tbody>
+          </table>
+        </div>
+      </div>
+      <div class="card">
+        <h2>Order types</h2>
+        <p class="note">Set with <code>tif</code> on <code>POST /v3/orders</code>. There's no side field: you buy the <code>outcomeId</code> you name. Orders go PENDING → OPEN → FILLED, CANCELED or REJECTED.</p>
+        <table class="table" id="table-tif">
+          <thead><tr><th>tif</th><th>Name</th><th>Behavior</th><th>ttl</th></tr></thead>
+          <tbody></tbody>
+        </table>
+      </div>
+    </section>
+
+    <!-- START -->
+    <section class="page" id="start" role="tabpanel" aria-labelledby="tab-start" hidden>
+      <div class="grid">
+        <div class="card">
+          <h2>Quickstart: key to resting order</h2>
+          <p class="note">First create the management key on Profile → Settings → Novig API.</p>
+          <ol class="steps" id="list-quick"></ol>
+        </div>
+        <div class="card">
+          <h2>Signing a request</h2>
+          <p class="note">Every request is signed with your key's Ed25519 or P-256 private key. Novig only holds the public half.</p>
+          <h3>Headers</h3>
+          <ul class="sig">
+            <li><code>Novig-Key-Id</code>: the key ID</li>
+            <li><code>Novig-Timestamp</code>: Unix milliseconds</li>
+            <li><code>Novig-Signature</code>: base64 signature</li>
+          </ul>
+          <h3>String to sign, one field per line</h3>
+          <ol class="sig">
+            <li><code>NOVIG-V3</code></li>
+            <li>The timestamp</li>
+            <li>The HTTP method</li>
+            <li>The path</li>
+            <li>The canonical query, sorted and percent-encoded</li>
+            <li>Hex SHA-256 of the body (of empty data if none)</li>
+          </ol>
+        </div>
+      </div>
+      <div class="card">
+        <h2>Environments</h2>
+        <p class="note">Keys only work in the environment where you made them. Production checks your IP and your phone's last geolocation.</p>
+        <div class="scroll auto">
+          <table class="table" id="table-env">
+            <thead><tr><th>Environment</th><th>REST</th><th class="hide-md">Websocket</th><th>Money</th><th>Location check</th><th class="hide-md">Keys from</th></tr></thead>
+            <tbody></tbody>
+          </table>
+        </div>
+      </div>
+      <div class="card">
+        <h2>Free exchange data</h2>
+        <p class="note">Static daily CSVs, published about 5 a.m. Eastern for the previous day. Rows don't identify traders or orders.</p>
+        <div class="scroll auto">
+          <table class="table" id="table-public">
+            <thead><tr><th>File</th><th>Path</th><th class="hide-md">Contents</th></tr></thead>
+            <tbody></tbody>
+          </table>
+        </div>
+      </div>
+    </section>
+    </main>
+
+    <footer class="foot">
+      <p>Unofficial. Compiled from <a href="https://docs.novig.com/" rel="noopener">docs.novig.com</a>. <span id="updated"></span></p>
+    </footer>
+  </div>
+
+  <dialog class="detail" id="detail" aria-labelledby="d-title">
+    <button class="close" type="button" aria-label="Close">×</button>
+    <div id="d-body"></div>
+  </dialog>
+
+  <div class="tip" id="tip" role="tooltip"></div>
+  <script src="app.js"></script>
+</body>
+</html>

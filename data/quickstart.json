@@ -1,0 +1,32 @@
+[
+ {
+  "step": 1,
+  "call": "POST /v3/echo",
+  "key": "management",
+  "what": "Proves host, key, clock and signature are right (200 echoes your body)"
+ },
+ {
+  "step": 2,
+  "call": "POST /v3/account/subaccounts",
+  "key": "management",
+  "what": "Opens a subaccount and registers its trading key; keyId names both"
+ },
+ {
+  "step": 3,
+  "call": "POST /v3/account/subaccounts/{keyId}/transfer",
+  "key": "management",
+  "what": "Funds it; 202 is accepted, wait for status Applied"
+ },
+ {
+  "step": 4,
+  "call": "GET /v3/catalog/markets?league=NFL&limit=5",
+  "key": "trading",
+  "what": "Finds a market and picks an outcomeId"
+ },
+ {
+  "step": 5,
+  "call": "POST /v3/orders",
+  "key": "trading",
+  "what": "Places a GTC bid; it rests once 'open' arrives on the private stream"
+ }
+]

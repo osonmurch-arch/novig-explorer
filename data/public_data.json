@@ -1,0 +1,17 @@
+[
+ {
+  "file": "Trades",
+  "path": "https://data.novig.com/reporting/trade-data/<date>/trades.csv",
+  "contents": "Every executed trade that day, one row per side, anonymized"
+ },
+ {
+  "file": "Markets",
+  "path": "https://data.novig.com/reporting/trade-data/<date>/markets.csv",
+  "contents": "One row per market per day: open interest, volume, OHLC"
+ },
+ {
+  "file": "Manifest",
+  "path": "https://data.novig.com/reporting/trade-data/index.json",
+  "contents": "Dates available for each file; published about 5 a.m. ET next day"
+ }
+]

@@ -1,0 +1,38 @@
+[
+ {
+  "bucket": "place",
+  "capacity": 256,
+  "refill_per_sec": 8,
+  "used_for": "Placing orders, 1 token per order"
+ },
+ {
+  "bucket": "cancel",
+  "capacity": 256,
+  "refill_per_sec": 16,
+  "used_for": "Cancels, 1 token per order ID"
+ },
+ {
+  "bucket": "read",
+  "capacity": 64,
+  "refill_per_sec": 16,
+  "used_for": "Catalog, types, single orders"
+ },
+ {
+  "bucket": "account",
+  "capacity": 64,
+  "refill_per_sec": 8,
+  "used_for": "Keys, subaccounts, transfers"
+ },
+ {
+  "bucket": "stream",
+  "capacity": 512,
+  "refill_per_sec": 4,
+  "used_for": "Websocket upgrade and subscriptions"
+ },
+ {
+  "bucket": "history",
+  "capacity": 512,
+  "refill_per_sec": 4,
+  "used_for": "Fills, transactions, settled orders, history"
+ }
+]

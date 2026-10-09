@@ -1,0 +1,38 @@
+[
+ {
+  "channel": "lifecycle",
+  "weight": 1,
+  "applies_to": "Market or event",
+  "carries": "Market status transitions"
+ },
+ {
+  "channel": "trades",
+  "weight": 4,
+  "applies_to": "Market or event",
+  "carries": "Every execution, plus lifecycle"
+ },
+ {
+  "channel": "bbo",
+  "weight": 8,
+  "applies_to": "Market or event",
+  "carries": "Best bid and offer, plus lifecycle"
+ },
+ {
+  "channel": "book",
+  "weight": 16,
+  "applies_to": "Market or event",
+  "carries": "Every order-book change, plus lifecycle"
+ },
+ {
+  "channel": "orders",
+  "weight": 1,
+  "applies_to": "Private",
+  "carries": "Your orders: open, fill, cancel, reject"
+ },
+ {
+  "channel": "positions",
+  "weight": 1,
+  "applies_to": "Private",
+  "carries": "Your positions"
+ }
+]

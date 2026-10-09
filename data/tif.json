@@ -1,0 +1,32 @@
+[
+ {
+  "tif": "GTC",
+  "name": "Good till canceled",
+  "behavior": "Rests until filled or canceled",
+  "ttl": "Forbidden"
+ },
+ {
+  "tif": "GTT",
+  "name": "Good till time",
+  "behavior": "Rests until ttl ms pass",
+  "ttl": "Required"
+ },
+ {
+  "tif": "IOC",
+  "name": "Immediate or cancel",
+  "behavior": "Fills what it can now, cancels the rest; rejected if nothing fills",
+  "ttl": "Forbidden"
+ },
+ {
+  "tif": "FOK",
+  "name": "Fill or kill",
+  "behavior": "Fills in full now or is rejected",
+  "ttl": "Forbidden"
+ },
+ {
+  "tif": "PO",
+  "name": "Post only",
+  "behavior": "Rests as maker only; rejected rather than taking",
+  "ttl": "Optional"
+ }
+]
