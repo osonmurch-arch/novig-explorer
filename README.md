@@ -36,6 +36,16 @@ Opening `index.html` straight from disk won't work, because browsers block `fetc
 
 Most changes to the content are edits to one JSON file. Every number on the page (tiles, counts, refill times, fee check values) is worked out from these files, so they stay consistent.
 
+## Live mode with your own key (optional)
+
+`local/` holds a small server you run on your own computer. It signs requests with your **read-only** Novig key, opens one websocket to Novig, and streams live order books to the Markets tab at `http://localhost:8787`. Your key never leaves your computer and is never committed (see `.gitignore`).
+
+1. Install Node.js 22 or newer (`winget install OpenJS.NodeJS.LTS` on Windows).
+2. Double-click `local/start.cmd` (or run `node local/server.mjs`). The first run creates `local/config.json` and opens it.
+3. Fill in `keyId` (your `trading::read` key ID) and `keyFile` (the path to that key's `.pem`), save, and start it again.
+
+It only forwards read-only routes: nothing that places orders or moves money. Novig's location check applies: no VPN, a state Novig serves, and a recent geolocation from the Novig app on your phone.
+
 ## Publishing
 
 GitHub Pages serves the repository root from the `main` branch. Every push to `main` updates the live site within a minute or two.

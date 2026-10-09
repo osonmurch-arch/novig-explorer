@@ -49,9 +49,9 @@
           </div>
           <input type="search" id="mk-q" placeholder="Search teams or events" aria-label="Search events">
           <button class="btn" type="button" id="mk-refresh">Refresh</button>
-          <label class="auto"><input type="checkbox" id="mk-auto"> Auto-refresh 30s</label>
+          <label class="auto" id="mk-auto-label"><input type="checkbox" id="mk-auto"> Auto-refresh 30s</label>
         </div>
-        <div class="mk-meta"><span id="mk-count"></span><span id="mk-status" aria-live="polite"></span></div>
+        <div class="mk-meta"><span><span id="mk-mode" class="mode" hidden></span><span id="mk-count"></span></span><span id="mk-status" aria-live="polite"></span></div>
         <div id="mk-list" class="mk-list"></div>
       </div>
     </section>

@@ -1,0 +1,6 @@
+# Never commit keys or local settings
+local/config.json
+*.pem
+*.key
+.env
+node_modules/

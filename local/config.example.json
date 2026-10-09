@@ -1,0 +1,7 @@
+{
+  "keyId": "PASTE-YOUR-trading::read-KEY-ID-HERE",
+  "keyFile": "C:/Users/YOU/novig-keys/desk-read.pem",
+  "host": "https://api.novig.com",
+  "port": 8787,
+  "streamMarkets": 30
+}

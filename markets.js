@@ -25,6 +25,8 @@
      The public throttle is per IP, roughly a 10-request burst refilling ~2/s.
      Browsers can't read Retry-After here, so a 429 waits 1.5 s and retries. */
   const bucket = { tokens: 6, cap: 6, rate: 1.8, last: performance.now() };
+  // Local live mode (your key, via local/server.mjs): the signed read bucket is 64 burst, 16/s.
+  const LIVE = { on: false, client: null, max: 30, es: null, watching: [], ws: 'idle', error: '', streaming: 0, last: null };
   const queue = [];
   let pumping = false;
   function take() {
@@ -47,7 +49,7 @@
   }
   async function run(job) {
     try {
-      const res = await fetch(API + job.path, { cache: 'no-store' });
+      const res = await fetch((LIVE.on ? '/local/api/v3' : API) + job.path, { cache: 'no-store' });
       if (res.status === 429 && job.tries < 4) {
         job.tries += 1;
         bucket.tokens = Math.min(bucket.tokens, 0);
@@ -130,6 +132,7 @@
     open: new Set(),
     eventMarkets: new Map(), // eventId -> markets[]
     openBook: null,
+    openMarket: null,
     loadedAt: null,
     auto: null,
     loading: false,
@@ -217,6 +220,7 @@
     if (gen !== S.gen) return;
     stamp();
     draw();
+    watch();
   }
 
   async function getBook(marketId) {
@@ -225,9 +229,24 @@
     return book;
   }
 
+  const clock = (d) => d.toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit', second: '2-digit' });
   function stamp() {
     S.loadedAt = new Date();
-    setStatus(`Prices as of ${S.loadedAt.toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit', second: '2-digit' })} · public data, no key`);
+    if (LIVE.on) return liveStatus();
+    setStatus(`Prices as of ${clock(S.loadedAt)} · public data, no key`);
+  }
+  function liveStatus() {
+    if (!LIVE.on) return;
+    const badge = $('#mk-mode');
+    if (LIVE.ws === 'live') {
+      badge.textContent = 'Live';
+      badge.className = 'mode on';
+      setStatus(`Streaming ${LIVE.streaming} market${LIVE.streaming === 1 ? '' : 's'} with your key${LIVE.last ? ' · last change ' + clock(LIVE.last) : ''}${S.loadedAt ? ' · others as of ' + clock(S.loadedAt) : ''}`);
+    } else {
+      badge.textContent = 'Your key';
+      badge.className = 'mode';
+      setStatus(`Using your key · stream ${LIVE.ws === 'connecting' ? 'connecting…' : 'reconnecting' + (LIVE.error ? ' (' + LIVE.error + ')' : '')}${S.loadedAt ? ' · prices as of ' + clock(S.loadedAt) : ''}`, LIVE.ws === 'down');
+    }
   }
 
   async function toggleEvent(e) {
@@ -247,7 +266,9 @@
 
   async function openBook(m) {
     S.openBook = S.openBook === m.marketId ? null : m.marketId;
+    S.openMarket = S.openBook ? m : null;
     draw();
+    watch();
     if (S.openBook && !S.books.has(m.marketId)) {
       try { await getBook(m.marketId); } catch (err) { S.books.set(m.marketId, { error: err.message, at: Date.now() }); }
       draw();
@@ -337,7 +358,7 @@
               el('td', { class: 'n' }, new Intl.NumberFormat('en').format(l.qty)),
               el('td', { class: 'n' }, money(l.qty * 0.01))))))
           : el('p', { class: 'muted note' }, 'No resting bids.')))),
-      el('p', { class: 'note' }, `Bids are resting orders to buy that side. Buying one side now fills against the other side's best bid, so its price is 1 − that bid. Each contract pays $0.01. ${fee} Snapshot from ${new Date(b.at).toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit', second: '2-digit' })}.`));
+      el('p', { class: 'note' }, `Bids are resting orders to buy that side. Buying one side now fills against the other side's best bid, so its price is 1 − that bid. Each contract pays $0.01. ${fee} ${b.live ? 'Live, updated ' : 'Snapshot from '}${new Date(b.at).toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit', second: '2-digit' })}.`));
   }
 
   function drawRowPrices(marketId) {
@@ -347,7 +368,11 @@
     if (!ev) return;
     const m = S.money.get(ev.eventId);
     const b = S.books.get(marketId);
-    if (b && b.book) slot.replaceChildren(...quote(m, b.book).slice(0, 2).map(priceCell));
+    if (!(b && b.book)) return;
+    const before = [...slot.querySelectorAll('.px-main')].map((n) => n.textContent);
+    const cells = quote(m, b.book).slice(0, 2).map(priceCell);
+    cells.forEach((c, i) => { if (before.length && before[i] !== undefined && c.querySelector('.px-main') && c.querySelector('.px-main').textContent !== before[i]) c.classList.add('flash'); });
+    slot.replaceChildren(...cells);
   }
 
   function draw() {
@@ -359,11 +384,86 @@
     const evs = visibleEvents();
     $('#mk-count').textContent = `${evs.length} ${S.view === 'games' ? 'games' : 'futures'}`;
     list.replaceChildren(...(evs.length ? evs.map(eventRow) : [el('div', { class: 'empty' }, S.events.length ? 'Nothing matches.' : `No open ${S.league} events right now.`)]));
+    drawLiveMarks();
     window.scrollTo(0, scrollY);
   }
 
+  /* ---------- live mode: local server with your key ---------- */
+  async function detectLocal() {
+    if (!/^(localhost|127\.0\.0\.1)$/.test(location.hostname)) return false;
+    try {
+      const r = await fetch('/local/status', { cache: 'no-store' });
+      const j = await r.json();
+      if (!j || !j.version) return false;
+      if (!j.ok) {
+        setStatus(`Your local server is running but Novig refused the key (${j.status}${j.code ? ' ' + j.code : ''}${j.message ? ': ' + j.message : ''}). Using public data.`, true);
+        return false;
+      }
+      LIVE.on = true;
+      LIVE.max = (j.stream && j.stream.max) || 30;
+      Object.assign(bucket, { tokens: 48, cap: 48, rate: 14 });
+      $('#mk-mode').hidden = false;
+      $('#markets .mk-top .note').textContent = 'Streaming from Novig with your read-only key through the server on this computer. Green-edged prices update live; prices are what it costs to buy that side right now, before any fee.';
+      $('#mk-auto-label').firstChild.nextSibling.textContent = ' Auto-refresh the rest 30s';
+      openStream();
+      return true;
+    } catch { return false; }
+  }
+
+  function openStream() {
+    LIVE.es = new EventSource('/local/stream');
+    LIVE.es.addEventListener('hello', (ev) => { const d = JSON.parse(ev.data); LIVE.client = d.client; LIVE.max = d.max || LIVE.max; watch(true); });
+    LIVE.es.addEventListener('status', (ev) => { const d = JSON.parse(ev.data); LIVE.ws = d.ws; LIVE.error = d.error; LIVE.streaming = d.streaming; liveStatus(); });
+    LIVE.es.addEventListener('notice', (ev) => { const d = JSON.parse(ev.data); console.warn('Novig:', d.code, d.message); });
+    LIVE.es.addEventListener('book', (ev) => {
+      const b = JSON.parse(ev.data);
+      S.books.set(b.marketId, { book: b, at: Date.now(), live: true });
+      LIVE.last = new Date();
+      drawRowPrices(b.marketId);
+      if (S.openBook === b.marketId) drawOpenBook();
+      liveStatus();
+    });
+    LIVE.es.onerror = () => { LIVE.ws = 'down'; LIVE.error = 'local server stopped?'; liveStatus(); };
+  }
+
+  // Stream the open book first, then the soonest visible games' moneylines, up to the server's cap.
+  let watchTimer = null;
+  function watch(now = false) {
+    if (!LIVE.on || !LIVE.client) return;
+    clearTimeout(watchTimer);
+    watchTimer = setTimeout(() => {
+      const ids = [];
+      if (S.openBook) ids.push(S.openBook);
+      for (const e of visibleEvents()) {
+        const m = S.money.get(e.eventId);
+        if (m && !ids.includes(m.marketId)) ids.push(m.marketId);
+        if (ids.length >= LIVE.max) break;
+      }
+      const key = ids.join(',');
+      if (key === LIVE.watching.join(',')) return;
+      LIVE.watching = ids;
+      fetch('/local/watch', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ client: LIVE.client, markets: ids }) }).catch(() => {});
+      drawLiveMarks();
+    }, now ? 0 : 300);
+  }
+
+  function drawLiveMarks() {
+    list.querySelectorAll('.ev-prices[data-market]').forEach((slot) => slot.classList.toggle('streamed', LIVE.on && LIVE.watching.includes(slot.dataset.market)));
+  }
+
+  function drawOpenBook() {
+    const row = list.querySelector('.mk.sel');
+    if (!row || !S.openMarket) return;
+    const old = row.querySelector('.book');
+    const fresh = bookView(S.openMarket, S.books.get(S.openBook));
+    if (old) old.replaceWith(fresh); else row.append(fresh);
+    const q = row.querySelector('.mk-q');
+    const b = S.books.get(S.openBook);
+    if (q && b && b.book) q.textContent = quote(S.openMarket, b.book).map((x) => `${x.outcome.name} ${x.ask ? american(x.ask.price) : '—'}`).join('  ·  ');
+  }
+
   /* ---------- controls ---------- */
-  leagueSel.addEventListener('change', () => { S.league = leagueSel.value; store.set('nv-league', S.league); loadLeague(); });
+  leagueSel.addEventListener('change', () => { S.league = leagueSel.value; store.set('nv-league', S.league); S.openBook = null; S.openMarket = null; loadLeague(); });
   document.querySelectorAll('.mk-view').forEach((b) => b.addEventListener('click', () => {
     S.view = b.dataset.view;
     document.querySelectorAll('.mk-view').forEach((x) => x.setAttribute('aria-pressed', String(x === b)));
@@ -386,7 +486,7 @@
   function start() {
     if (S.started) return;
     S.started = true;
-    loadLeagues().then(loadLeague);
+    detectLocal().then(loadLeagues).then(loadLeague);
   }
   document.addEventListener('nv:tab', (ev) => { if (ev.detail === 'markets') start(); });
   if (!root.hidden) start();
